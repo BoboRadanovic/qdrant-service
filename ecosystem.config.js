@@ -20,10 +20,10 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
 
-      // Logging
-      log_file: "./logs/combined.log",
-      out_file: "./logs/out.log",
-      error_file: "./logs/error.log",
+      // Logging - disabled for Docker
+      log_file: "/dev/null",
+      out_file: "/dev/null",
+      error_file: "/dev/null",
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
     },
   ],
