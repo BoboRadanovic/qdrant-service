@@ -9,11 +9,11 @@ module.exports = {
       max_memory_restart: "1G",
       env: {
         NODE_ENV: "production",
-        PORT: 3000,
+        PORT: 3001,
       },
       env_production: {
         NODE_ENV: "production",
-        PORT: 3000,
+        PORT: 3001,
       },
       // Restart policy
       restart_delay: 4000,
