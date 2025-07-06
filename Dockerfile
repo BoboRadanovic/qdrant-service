@@ -13,18 +13,17 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install --omit=dev && npm cache clean --force
 
-# Create logs directory
-RUN mkdir -p logs
-
-# Copy application files
+# Copy application files first
 COPY . .
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nextjs -u 1001
 
-# Change ownership of the app directory
-RUN chown -R nextjs:nodejs /app
+# Create logs directory and set permissions
+RUN mkdir -p logs && \
+    chown -R nextjs:nodejs /app
+
 USER nextjs
 
 # Expose port
