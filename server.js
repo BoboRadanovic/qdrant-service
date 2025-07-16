@@ -995,6 +995,421 @@ app.get("/collection/info", async (req, res) => {
   }
 });
 
+// Enhanced video search endpoint - combines Qdrant search with ClickHouse summary data OR ClickHouse-only search
+app.post("/search/videos/enhanced", async (req, res) => {
+  const startTime = performance.now();
+
+  try {
+    const {
+      keyword = null, // Now optional
+      limit = DEFAULT_LIMIT,
+      category_id = null,
+      language = null,
+      is_unlisted = null,
+      duration_min = null,
+      duration_max = null,
+      order_by = "published_at",
+      order_direction = "desc",
+    } = req.body;
+
+    // Validate keyword if provided
+    if (
+      keyword !== null &&
+      (typeof keyword !== "string" || keyword.trim() === "")
+    ) {
+      return res.status(400).json({
+        error: "Keyword must be a non-empty string if provided",
+        code: "INVALID_KEYWORD",
+      });
+    }
+
+    // Validate limit
+    if (limit < 1 || limit > 1000) {
+      return res.status(400).json({
+        error: "Limit must be between 1 and 1000",
+        code: "INVALID_LIMIT",
+      });
+    }
+
+    // Validate order_by field
+    const validOrderFields = [
+      "published_at",
+      "last_30",
+      "last_60",
+      "last_90",
+      "total",
+    ];
+    if (!validOrderFields.includes(order_by)) {
+      return res.status(400).json({
+        error: `order_by must be one of: ${validOrderFields.join(", ")}`,
+        code: "INVALID_ORDER_BY",
+      });
+    }
+
+    // Validate order_direction
+    if (!["asc", "desc"].includes(order_direction.toLowerCase())) {
+      return res.status(400).json({
+        error: "order_direction must be 'asc' or 'desc'",
+        code: "INVALID_ORDER_DIRECTION",
+      });
+    }
+
+    console.log(
+      `🔍 Enhanced video search: ${
+        keyword ? `"${keyword}"` : "ClickHouse-only"
+      } (limit: ${limit})`
+    );
+
+    let qdrantResults = [];
+    let embeddingTime = 0;
+    let qdrantTime = 0;
+    let videoIds = [];
+
+    // PATH 1: Keyword provided - do Qdrant search first
+    if (keyword) {
+      console.log(`📡 Performing Qdrant semantic search for: "${keyword}"`);
+
+      // Step 1: Create embedding and search in Qdrant
+      const embeddingStartTime = performance.now();
+      const embedding = await createEmbedding(keyword.trim());
+      embeddingTime = performance.now() - embeddingStartTime;
+
+      // Build filters for Qdrant search
+      const filters = { must: [] };
+
+      // Category ID filter (array of values)
+      if (category_id && Array.isArray(category_id) && category_id.length > 0) {
+        filters.must.push({
+          key: "category_id",
+          match: { any: category_id },
+        });
+      }
+
+      // Language filter
+      if (language && typeof language === "string") {
+        filters.must.push({
+          key: "language",
+          match: { value: language },
+        });
+      }
+
+      // Is unlisted filter
+      if (is_unlisted !== null && typeof is_unlisted === "boolean") {
+        filters.must.push({
+          key: "unlisted",
+          match: { value: is_unlisted },
+        });
+      }
+
+      // Duration range filter
+      if (duration_min !== null || duration_max !== null) {
+        const durationFilter = { key: "duration", range: {} };
+
+        if (duration_min !== null && typeof duration_min === "number") {
+          durationFilter.range.gte = duration_min;
+        }
+
+        if (duration_max !== null && typeof duration_max === "number") {
+          durationFilter.range.lte = duration_max;
+        }
+
+        filters.must.push(durationFilter);
+      }
+
+      // Search in Qdrant
+      const qdrantStartTime = performance.now();
+      const searchBody = {
+        vector: embedding,
+        limit: parseInt(limit),
+        with_payload: true,
+        with_vector: false,
+        params: {
+          hnsw_ef: 32,
+        },
+      };
+
+      // Add filters if any were specified
+      if (filters.must.length > 0) {
+        searchBody.filter = filters;
+      }
+
+      const searchResponse = await axios.post(
+        `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
+        searchBody,
+        {
+          headers: buildHeaders(),
+          timeout: 30000,
+        }
+      );
+
+      qdrantResults = searchResponse.data.result;
+      qdrantTime = performance.now() - qdrantStartTime;
+
+      // Extract video IDs from Qdrant results
+      videoIds = qdrantResults
+        .sort((a, b) => b.score - a.score)
+        .map((result) => result.payload?.yt_video_id || result.id);
+
+      console.log(`✅ Found ${videoIds.length} videos from Qdrant search`);
+    }
+
+    // PATH 2: Get data from ClickHouse
+    let clickhouseData = [];
+    let clickhouseTime = 0;
+    const clickhouseStartTime = performance.now();
+
+    if (keyword && videoIds.length > 0) {
+      // Case 1: We have video IDs from Qdrant search - query specific videos
+      const videoIdList = videoIds
+        .map((id) => `'${id.replace(/'/g, "''")}'`)
+        .join(", ");
+
+      const query = `
+        SELECT 
+          yt_video_id,
+          last_30,
+          last_60,
+          last_90,
+          total,
+          category_id,
+          language,
+          listed,
+          duration,
+          title,
+          frame,
+          brand_name,
+          published_at,
+          updated_at
+        FROM analytics.yt_video_summary 
+        WHERE yt_video_id IN (${videoIdList})
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}
+        LIMIT ${parseInt(limit)}
+      `;
+
+      console.log(
+        `📊 Querying ClickHouse for ${videoIds.length} specific video IDs`
+      );
+
+      try {
+        const resultSet = await clickhouse.query({
+          query: query,
+          format: "JSONEachRow",
+        });
+
+        clickhouseData = await resultSet.json();
+        clickhouseTime = performance.now() - clickhouseStartTime;
+
+        console.log(`✅ ClickHouse returned ${clickhouseData.length} records`);
+      } catch (clickhouseError) {
+        console.error("❌ ClickHouse query failed:", clickhouseError.message);
+        clickhouseData = [];
+      }
+    } else if (!keyword) {
+      // Case 2: No keyword - direct ClickHouse query with filters
+      console.log(`📊 Performing direct ClickHouse search with filters`);
+
+      // Build WHERE clause for filters
+      const whereConditions = [];
+
+      // Category ID filter
+      if (category_id && Array.isArray(category_id) && category_id.length > 0) {
+        const categoryList = category_id.join(", ");
+        whereConditions.push(`category_id IN (${categoryList})`);
+      }
+
+      // Language filter
+      if (language && typeof language === "string") {
+        whereConditions.push(`language = '${language.replace(/'/g, "''")}'`);
+      }
+
+      // Is unlisted filter (note: ClickHouse uses 'listed', opposite of 'unlisted')
+      if (is_unlisted !== null && typeof is_unlisted === "boolean") {
+        whereConditions.push(`listed = ${!is_unlisted}`);
+      }
+
+      // Duration range filter
+      if (duration_min !== null && typeof duration_min === "number") {
+        whereConditions.push(`duration >= ${duration_min}`);
+      }
+      if (duration_max !== null && typeof duration_max === "number") {
+        whereConditions.push(`duration <= ${duration_max}`);
+      }
+
+      const whereClause =
+        whereConditions.length > 0
+          ? `WHERE ${whereConditions.join(" AND ")}`
+          : "";
+
+      const query = `
+        SELECT 
+          yt_video_id,
+          last_30,
+          last_60,
+          last_90,
+          total,
+          category_id,
+          language,
+          listed,
+          duration,
+          title,
+          frame,
+          brand_name,
+          published_at,
+          updated_at
+        FROM analytics.yt_video_summary 
+        ${whereClause}
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}
+        LIMIT ${parseInt(limit)}
+      `;
+
+      console.log(`📊 Executing direct ClickHouse query with filters`);
+
+      try {
+        const resultSet = await clickhouse.query({
+          query: query,
+          format: "JSONEachRow",
+        });
+
+        clickhouseData = await resultSet.json();
+        clickhouseTime = performance.now() - clickhouseStartTime;
+
+        console.log(`✅ ClickHouse returned ${clickhouseData.length} records`);
+      } catch (clickhouseError) {
+        console.error("❌ ClickHouse query failed:", clickhouseError.message);
+        clickhouseData = [];
+      }
+    }
+
+    const totalTime = performance.now() - startTime;
+
+    // Step 3: Format results based on search type
+    const enhancedResults = [];
+
+    if (keyword) {
+      // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
+      const clickhouseMap = new Map();
+      clickhouseData.forEach((item) => {
+        clickhouseMap.set(item.yt_video_id, item);
+      });
+
+      // Combine Qdrant results with ClickHouse data
+      qdrantResults.forEach((qdrantResult) => {
+        const videoId = qdrantResult.payload?.yt_video_id || qdrantResult.id;
+        const clickhouseInfo = clickhouseMap.get(videoId);
+
+        const enhancedResult = {
+          video_id: videoId,
+          similarity_score: qdrantResult.score,
+          // Qdrant payload data
+          qdrant_data: {
+            category_id: qdrantResult.payload?.category_id,
+            language: qdrantResult.payload?.language,
+            is_unlisted: qdrantResult.payload?.unlisted,
+            duration: qdrantResult.payload?.duration,
+          },
+          // ClickHouse summary data (if available)
+          summary_data: clickhouseInfo || null,
+        };
+
+        enhancedResults.push(enhancedResult);
+      });
+    } else {
+      // Case 2: ClickHouse-only search - format ClickHouse data directly
+      clickhouseData.forEach((clickhouseResult) => {
+        const enhancedResult = {
+          video_id: clickhouseResult.yt_video_id,
+          similarity_score: null, // No similarity score for direct ClickHouse search
+          // No Qdrant data available
+          qdrant_data: null,
+          // ClickHouse summary data
+          summary_data: clickhouseResult,
+        };
+
+        enhancedResults.push(enhancedResult);
+      });
+    }
+
+    // Format response
+    const response = {
+      success: true,
+      search_type: keyword ? "semantic_plus_clickhouse" : "clickhouse_only",
+      keyword: keyword || null,
+      total_results: enhancedResults.length,
+      qdrant_matches: qdrantResults.length,
+      clickhouse_matches: clickhouseData.length,
+      parameters: {
+        search_filters: {
+          category_id: category_id,
+          language: language,
+          is_unlisted: is_unlisted,
+          duration_range: {
+            min: duration_min,
+            max: duration_max,
+          },
+        },
+        clickhouse_ordering: {
+          order_by: order_by,
+          order_direction: order_direction,
+        },
+        limit: parseInt(limit),
+      },
+      timing: {
+        total_ms: Math.round(totalTime),
+        embedding_ms: Math.round(embeddingTime),
+        qdrant_search_ms: Math.round(qdrantTime),
+        clickhouse_query_ms: Math.round(clickhouseTime),
+      },
+      results: enhancedResults,
+    };
+
+    const searchTypeDesc = keyword
+      ? `semantic + ClickHouse`
+      : `ClickHouse-only`;
+    console.log(
+      `✅ Enhanced search (${searchTypeDesc}) completed in ${totalTime.toFixed(
+        2
+      )}ms - ${enhancedResults.length} results`
+    );
+
+    res.status(200).json(response);
+  } catch (error) {
+    const totalTime = performance.now() - startTime;
+    console.error(
+      `❌ Enhanced search error (after ${totalTime.toFixed(2)}ms):`,
+      error.message
+    );
+
+    // Handle specific error types
+    if (error.code === "ECONNREFUSED") {
+      return res.status(503).json({
+        error: "Unable to connect to Qdrant service",
+        code: "QDRANT_UNAVAILABLE",
+      });
+    }
+
+    if (error.response?.status === 404) {
+      return res.status(404).json({
+        error: `Collection '${COLLECTION_NAME}' not found`,
+        code: "COLLECTION_NOT_FOUND",
+      });
+    }
+
+    if (error.message.includes("Failed to create embedding")) {
+      return res.status(503).json({
+        error: "Failed to create embedding",
+        code: "EMBEDDING_ERROR",
+      });
+    }
+
+    res.status(500).json({
+      error: "Internal server error",
+      code: "INTERNAL_ERROR",
+      message:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+});
+
 // YouTube video summary endpoint with ordering support
 app.post("/videos/summary", async (req, res) => {
   const startTime = performance.now();
@@ -1303,6 +1718,9 @@ app.listen(PORT, async () => {
   );
   console.log(
     `  POST /search/videos/filtered - Filtered video search with category_id, language, is_unlisted, duration`
+  );
+  console.log(
+    `  POST /search/videos/enhanced - Dual-mode: Semantic search (with keyword) OR ClickHouse-only (without keyword)`
   );
   console.log(
     `  POST /search/brands/filtered - Filtered brand search with category_id, country_id, software_id`
