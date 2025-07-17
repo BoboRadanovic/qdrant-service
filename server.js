@@ -695,10 +695,10 @@ app.post("/search/brands/filtered", async (req, res) => {
     // Add filters if any were specified
     if (filters.must.length > 0) {
       searchBody.filter = filters;
-      console.log("Applied filters:", JSON.stringify(filters, null, 2));
+      //console.log("Applied filters:", JSON.stringify(filters, null, 2));
     }
 
-    console.log("Search body:", JSON.stringify(searchBody, null, 2));
+    //console.log("Search body:", JSON.stringify(searchBody, null, 2));
 
     const searchResponse = await axios.post(
       `${qdrantUrl}/collections/${COLLECTION_NAME_BRANDS}/points/search`,
@@ -1001,25 +1001,26 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
   try {
     const {
-      keyword = null, // Now optional
+      searchTerm = null, // Now optional
       limit = DEFAULT_LIMIT,
-      category_id = null,
-      language = null,
-      is_unlisted = null,
-      duration_min = null,
-      duration_max = null,
-      order_by = "published_at",
-      order_direction = "desc",
+      page = 1,
+      categoryIds = null,
+      languageId = null,
+      videoStatus = "all", // 'all', 'public', 'unlisted'
+      durationMoreThen = null,
+      durationLessThen = null,
+      sortProp = null, // Will default based on context
+      orderAsc = false, // true = asc, false = desc
     } = req.body;
 
-    // Validate keyword if provided
+    // Validate searchTerm if provided
     if (
-      keyword !== null &&
-      (typeof keyword !== "string" || keyword.trim() === "")
+      searchTerm !== null &&
+      (typeof searchTerm !== "string" || searchTerm.trim() === "")
     ) {
       return res.status(400).json({
-        error: "Keyword must be a non-empty string if provided",
-        code: "INVALID_KEYWORD",
+        error: "searchTerm must be a non-empty string if provided",
+        code: "INVALID_SEARCH_TERM",
       });
     }
 
@@ -1031,33 +1032,70 @@ app.post("/search/videos/enhanced", async (req, res) => {
       });
     }
 
-    // Validate order_by field
+    // Validate sortProp field (if provided)
     const validOrderFields = [
-      "published_at",
-      "last_30",
-      "last_60",
-      "last_90",
+      "publishedAt",
+      "last30Days",
+      "last90Days",
       "total",
+      "similarity_score",
     ];
-    if (!validOrderFields.includes(order_by)) {
+    if (sortProp && !validOrderFields.includes(sortProp)) {
       return res.status(400).json({
-        error: `order_by must be one of: ${validOrderFields.join(", ")}`,
-        code: "INVALID_ORDER_BY",
+        error: `sortProp must be one of: ${validOrderFields.join(
+          ", "
+        )} or null for auto-detection`,
+        code: "INVALID_SORT_PROP",
       });
     }
 
-    // Validate order_direction
-    if (!["asc", "desc"].includes(order_direction.toLowerCase())) {
+    // Validate orderAsc (boolean)
+    if (typeof orderAsc !== "boolean") {
       return res.status(400).json({
-        error: "order_direction must be 'asc' or 'desc'",
-        code: "INVALID_ORDER_DIRECTION",
+        error: "orderAsc must be a boolean (true = asc, false = desc)",
+        code: "INVALID_ORDER_ASC",
       });
     }
+
+    // Determine default sortProp based on context
+    let effectiveSortProp = sortProp;
+    if (!effectiveSortProp) {
+      effectiveSortProp = searchTerm ? "similarity_score" : "publishedAt";
+    }
+
+    // Map frontend sortProp names to database field names
+    const sortPropMapping = {
+      publishedAt: "published_at",
+      last30Days: "last_30",
+      last90Days: "last_90",
+      total: "total",
+      similarity_score: "similarity_score",
+    };
+
+    // Convert frontend sortProp to database field name
+    const dbSortField = sortPropMapping[effectiveSortProp] || effectiveSortProp;
+
+    // Convert orderAsc to order_direction string
+    const order_direction = orderAsc ? "asc" : "desc";
+    // For ClickHouse queries, use published_at as fallback when sorting by similarity_score
+    const order_by =
+      dbSortField === "similarity_score" ? "published_at" : dbSortField;
+
+    // Validate page
+    if (page < 1) {
+      return res.status(400).json({
+        error: "Page must be >= 1",
+        code: "INVALID_PAGE",
+      });
+    }
+
+    // Calculate offset for pagination
+    const offset = (page - 1) * limit;
 
     console.log(
       `🔍 Enhanced video search: ${
-        keyword ? `"${keyword}"` : "ClickHouse-only"
-      } (limit: ${limit})`
+        searchTerm ? `"${searchTerm}"` : "ClickHouse-only"
+      } (limit: ${limit}, page: ${page})`
     );
 
     let qdrantResults = [];
@@ -1066,55 +1104,81 @@ app.post("/search/videos/enhanced", async (req, res) => {
     let videoIds = [];
 
     // PATH 1: Keyword provided - do Qdrant search first
-    if (keyword) {
-      console.log(`📡 Performing Qdrant semantic search for: "${keyword}"`);
+    if (searchTerm) {
+      console.log(`📡 Performing Qdrant semantic search for: "${searchTerm}"`);
 
       // Step 1: Create embedding and search in Qdrant
       const embeddingStartTime = performance.now();
-      const embedding = await createEmbedding(keyword.trim());
+      const embedding = await createEmbedding(searchTerm.trim());
       embeddingTime = performance.now() - embeddingStartTime;
 
       // Build filters for Qdrant search
       const filters = { must: [] };
 
+      // console.log("🔧 Building filters with parameters:", {
+      //   categoryIds,
+      //   languageId,
+      //   videoStatus,
+      //   durationMoreThen,
+      //   durationLessThen,
+      // });
+
       // Category ID filter (array of values)
-      if (category_id && Array.isArray(category_id) && category_id.length > 0) {
+      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        //console.log("✅ Adding category filter:", categoryIds);
         filters.must.push({
           key: "category_id",
-          match: { any: category_id },
+          match: { any: categoryIds },
         });
       }
 
       // Language filter
-      if (language && typeof language === "string") {
+      if (languageId && typeof languageId === "string") {
+        //console.log("✅ Adding language filter:", languageId);
         filters.must.push({
           key: "language",
-          match: { value: language },
+          match: { value: languageId },
         });
       }
 
-      // Is unlisted filter
-      if (is_unlisted !== null && typeof is_unlisted === "boolean") {
-        filters.must.push({
-          key: "unlisted",
-          match: { value: is_unlisted },
-        });
+      // Video status filter
+      if (videoStatus !== "all" && typeof videoStatus === "string") {
+        //console.log("✅ Adding video status filter:", videoStatus);
+        if (videoStatus === "public") {
+          // Public videos are NOT unlisted
+          filters.must.push({
+            key: "unlisted",
+            match: { value: false },
+          });
+        } else if (videoStatus === "unlisted") {
+          // Unlisted videos ARE unlisted
+          filters.must.push({
+            key: "unlisted",
+            match: { value: true },
+          });
+        }
       }
 
       // Duration range filter
-      if (duration_min !== null || duration_max !== null) {
+      if (durationMoreThen !== null || durationLessThen !== null) {
+        // console.log("✅ Adding duration filter:", {
+        //   durationMoreThen,
+        //   durationLessThen,
+        // });
         const durationFilter = { key: "duration", range: {} };
 
-        if (duration_min !== null && typeof duration_min === "number") {
-          durationFilter.range.gte = duration_min;
+        if (durationMoreThen !== null && typeof durationMoreThen === "number") {
+          durationFilter.range.gte = durationMoreThen;
         }
 
-        if (duration_max !== null && typeof duration_max === "number") {
-          durationFilter.range.lte = duration_max;
+        if (durationLessThen !== null && typeof durationLessThen === "number") {
+          durationFilter.range.lte = durationLessThen;
         }
 
         filters.must.push(durationFilter);
       }
+
+      //console.log("🎯 Final filters object:", JSON.stringify(filters, null, 2));
 
       // Search in Qdrant
       const qdrantStartTime = performance.now();
@@ -1131,7 +1195,17 @@ app.post("/search/videos/enhanced", async (req, res) => {
       // Add filters if any were specified
       if (filters.must.length > 0) {
         searchBody.filter = filters;
+        //console.log("🎯 Filters applied to search body");
+      } else {
+        //console.log("⚠️ No filters applied - filters.must is empty");
       }
+
+      // Log search body without the large vector array (after filters are applied)
+      // const { vector, ...searchBodyWithoutVector } = searchBody;
+      // console.log(
+      //   "Search body (without vector):",
+      //   JSON.stringify(searchBodyWithoutVector, null, 2)
+      // );
 
       const searchResponse = await axios.post(
         `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
@@ -1158,33 +1232,60 @@ app.post("/search/videos/enhanced", async (req, res) => {
     let clickhouseTime = 0;
     const clickhouseStartTime = performance.now();
 
-    if (keyword && videoIds.length > 0) {
+    if (searchTerm && videoIds.length > 0) {
       // Case 1: We have video IDs from Qdrant search - query specific videos
       const videoIdList = videoIds
         .map((id) => `'${id.replace(/'/g, "''")}'`)
         .join(", ");
 
-      const query = `
-        SELECT 
-          yt_video_id,
-          last_30,
-          last_60,
-          last_90,
-          total,
-          category_id,
-          language,
-          listed,
-          duration,
-          title,
-          frame,
-          brand_name,
-          published_at,
-          updated_at
-        FROM analytics.yt_video_summary 
-        WHERE yt_video_id IN (${videoIdList})
-        ORDER BY ${order_by} ${order_direction.toUpperCase()}
-        LIMIT ${parseInt(limit)}
-      `;
+      let query;
+
+      if (effectiveSortProp === "similarity_score") {
+        // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
+        query = `
+          SELECT 
+            yt_video_id,
+            last_30,
+            last_60,
+            last_90,
+            total,
+            category_id,
+            language,
+            listed,
+            duration,
+            title,
+            frame,
+            brand_name,
+            published_at,
+            updated_at
+          FROM analytics.yt_video_summary 
+          WHERE yt_video_id IN (${videoIdList})
+        `;
+      } else {
+        // For other sort fields, use ClickHouse ordering
+        query = `
+          SELECT 
+            yt_video_id,
+            last_30,
+            last_60,
+            last_90,
+            total,
+            category_id,
+            language,
+            listed,
+            duration,
+            title,
+            frame,
+            brand_name,
+            published_at,
+            updated_at
+          FROM analytics.yt_video_summary 
+          WHERE yt_video_id IN (${videoIdList})
+          ORDER BY ${order_by} ${order_direction.toUpperCase()}
+          LIMIT ${parseInt(limit)}
+          OFFSET ${parseInt(offset)}
+        `;
+      }
 
       console.log(
         `📊 Querying ClickHouse for ${videoIds.length} specific video IDs`
@@ -1204,7 +1305,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         console.error("❌ ClickHouse query failed:", clickhouseError.message);
         clickhouseData = [];
       }
-    } else if (!keyword) {
+    } else if (!searchTerm) {
       // Case 2: No keyword - direct ClickHouse query with filters
       console.log(`📊 Performing direct ClickHouse search with filters`);
 
@@ -1212,27 +1313,33 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const whereConditions = [];
 
       // Category ID filter
-      if (category_id && Array.isArray(category_id) && category_id.length > 0) {
-        const categoryList = category_id.join(", ");
+      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        const categoryList = categoryIds.join(", ");
         whereConditions.push(`category_id IN (${categoryList})`);
       }
 
       // Language filter
-      if (language && typeof language === "string") {
-        whereConditions.push(`language = '${language.replace(/'/g, "''")}'`);
+      if (languageId && typeof languageId === "string") {
+        whereConditions.push(`language = '${languageId.replace(/'/g, "''")}'`);
       }
 
-      // Is unlisted filter (note: ClickHouse uses 'listed', opposite of 'unlisted')
-      if (is_unlisted !== null && typeof is_unlisted === "boolean") {
-        whereConditions.push(`listed = ${!is_unlisted}`);
+      // Video status filter (note: ClickHouse uses 'listed', opposite of 'unlisted')
+      if (videoStatus !== "all" && typeof videoStatus === "string") {
+        if (videoStatus === "public") {
+          // Public videos are listed (listed = 1)
+          whereConditions.push(`listed = 1`);
+        } else if (videoStatus === "unlisted") {
+          // Unlisted videos are not listed (listed = 0)
+          whereConditions.push(`listed = 0`);
+        }
       }
 
       // Duration range filter
-      if (duration_min !== null && typeof duration_min === "number") {
-        whereConditions.push(`duration >= ${duration_min}`);
+      if (durationMoreThen !== null && typeof durationMoreThen === "number") {
+        whereConditions.push(`duration >= ${durationMoreThen}`);
       }
-      if (duration_max !== null && typeof duration_max === "number") {
-        whereConditions.push(`duration <= ${duration_max}`);
+      if (durationLessThen !== null && typeof durationLessThen === "number") {
+        whereConditions.push(`duration <= ${durationLessThen}`);
       }
 
       const whereClause =
@@ -1260,6 +1367,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
+        OFFSET ${parseInt(offset)}
       `;
 
       console.log(`📊 Executing direct ClickHouse query with filters`);
@@ -1285,7 +1393,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
     // Step 3: Format results based on search type
     const enhancedResults = [];
 
-    if (keyword) {
+    if (searchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
@@ -1298,7 +1406,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         const clickhouseInfo = clickhouseMap.get(videoId);
 
         const enhancedResult = {
-          video_id: videoId,
+          ytVideoId: videoId,
           similarity_score: qdrantResult.score,
           // Qdrant payload data
           qdrant_data: {
@@ -1317,7 +1425,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
         const enhancedResult = {
-          video_id: clickhouseResult.yt_video_id,
+          ytVideoId: clickhouseResult.yt_video_id,
           similarity_score: null, // No similarity score for direct ClickHouse search
           // No Qdrant data available
           qdrant_data: null,
@@ -1329,22 +1437,109 @@ app.post("/search/videos/enhanced", async (req, res) => {
       });
     }
 
-    // Format response
+    // Sort results based on the effective sort property
+    if (searchTerm) {
+      // When we have searchTerm, we need to sort the combined results
+      if (effectiveSortProp === "similarity_score") {
+        // Only sort by similarity when no sortProp was provided or explicitly requested
+        console.log(
+          `🔄 Sorting by similarity_score (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          const scoreA = a.similarity_score || 0;
+          const scoreB = b.similarity_score || 0;
+          return orderAsc ? scoreA - scoreB : scoreB - scoreA;
+        });
+      } else {
+        // Sort by the specified field (prioritize user choice)
+        console.log(
+          `🔄 Sorting by ${effectiveSortProp} (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          let valueA, valueB;
+
+          switch (dbSortField) {
+            case "last_30":
+              valueA = a.summary_data?.last_30 ?? 0;
+              valueB = b.summary_data?.last_30 ?? 0;
+              break;
+            case "last_90":
+              valueA = a.summary_data?.last_90 ?? 0;
+              valueB = b.summary_data?.last_90 ?? 0;
+              break;
+            case "total":
+              valueA = a.summary_data?.total ?? 0;
+              valueB = b.summary_data?.total ?? 0;
+              break;
+            case "published_at":
+              valueA = new Date(a.summary_data?.published_at || 0);
+              valueB = new Date(b.summary_data?.published_at || 0);
+              break;
+            default:
+              valueA = a.summary_data?.[dbSortField] ?? 0;
+              valueB = b.summary_data?.[dbSortField] ?? 0;
+          }
+
+          if (dbSortField === "published_at") {
+            return orderAsc ? valueA - valueB : valueB - valueA;
+          } else {
+            return orderAsc ? valueA - valueB : valueB - valueA;
+          }
+        });
+      }
+    } else {
+      console.log(
+        `🔄 ClickHouse-only search, sorted by ${order_by} (${order_direction})`
+      );
+    }
+
+    // Format response to match frontend expectations
+    const data = {
+      page: page,
+      hasMore: clickhouseData.length === limit,
+      results: enhancedResults.map((r) => ({
+        ytVideoId: r.ytVideoId,
+        isSwiped: false, // Default value - you may need to get this from another source
+        title: r.summary_data?.title || r.qdrant_data?.title || null,
+        duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
+        description: null, // Not available in current data structure
+        thumbnail: r.summary_data?.frame || null,
+        publishedAt: r.summary_data?.published_at || null,
+        totalSpend: r.summary_data?.total || null,
+        is_unlisted:
+          r.summary_data?.listed === false ||
+          r.qdrant_data?.is_unlisted ||
+          false,
+        language: r.summary_data?.language || r.qdrant_data?.language || null,
+        category:
+          r.summary_data?.category_id || r.qdrant_data?.category_id || null,
+        last30Days: r.summary_data?.last_30 ?? null,
+        last90Days: r.summary_data?.last_90 ?? null,
+        affiliateOfferId: null, // Not available in current data structure
+        brandName: r.summary_data?.brand_name || null,
+        brandId: null, // Not available in current data structure
+        // Additional fields for debugging/backward compatibility
+        similarity_score: r.similarity_score,
+        qdrant_data: r.qdrant_data,
+        summary_data: r.summary_data,
+      })),
+    };
+
     const response = {
       success: true,
-      search_type: keyword ? "semantic_plus_clickhouse" : "clickhouse_only",
-      keyword: keyword || null,
+      search_type: searchTerm ? "semantic_plus_clickhouse" : "clickhouse_only",
+      keyword: searchTerm || null,
       total_results: enhancedResults.length,
       qdrant_matches: qdrantResults.length,
       clickhouse_matches: clickhouseData.length,
       parameters: {
         search_filters: {
-          category_id: category_id,
-          language: language,
-          is_unlisted: is_unlisted,
+          category_id: categoryIds,
+          language: languageId,
+          is_unlisted: videoStatus !== "all",
           duration_range: {
-            min: duration_min,
-            max: duration_max,
+            min: durationMoreThen,
+            max: durationLessThen,
           },
         },
         clickhouse_ordering: {
@@ -1352,6 +1547,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
           order_direction: order_direction,
         },
         limit: parseInt(limit),
+        page: parseInt(page),
+        offset: parseInt(offset),
       },
       timing: {
         total_ms: Math.round(totalTime),
@@ -1359,10 +1556,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
         qdrant_search_ms: Math.round(qdrantTime),
         clickhouse_query_ms: Math.round(clickhouseTime),
       },
-      results: enhancedResults,
+      data: data,
     };
 
-    const searchTypeDesc = keyword
+    const searchTypeDesc = searchTerm
       ? `semantic + ClickHouse`
       : `ClickHouse-only`;
     console.log(
