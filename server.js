@@ -1011,6 +1011,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       durationLessThen = null,
       sortProp = null, // Will default based on context
       orderAsc = false, // true = asc, false = desc
+      similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
     } = req.body;
 
     // Validate searchTerm if provided
@@ -1056,6 +1057,15 @@ app.post("/search/videos/enhanced", async (req, res) => {
         code: "INVALID_ORDER_ASC",
       });
     }
+
+    // Validate similarityThreshold
+    if (similarityThreshold < 0 || similarityThreshold > 1) {
+      return res.status(400).json({
+        error: "similarityThreshold must be between 0.0 and 1.0",
+        code: "INVALID_similarityThreshold",
+      });
+    }
+    console.log("similarityThreshold", similarityThreshold);
 
     // Determine default sortProp based on context
     let effectiveSortProp = sortProp;
@@ -1219,12 +1229,28 @@ app.post("/search/videos/enhanced", async (req, res) => {
       qdrantResults = searchResponse.data.result;
       qdrantTime = performance.now() - qdrantStartTime;
 
+      // Filter results by similarity threshold
+      const originalResultsCount = qdrantResults.length;
+      qdrantResults = qdrantResults.filter(
+        (result) => result.score >= similarityThreshold
+      );
+
+      if (originalResultsCount > qdrantResults.length) {
+        console.log(
+          `🔍 Filtered ${
+            originalResultsCount - qdrantResults.length
+          } results below similarity threshold ${similarityThreshold}`
+        );
+      }
+
       // Extract video IDs from Qdrant results
       videoIds = qdrantResults
         .sort((a, b) => b.score - a.score)
         .map((result) => result.payload?.yt_video_id || result.id);
 
-      console.log(`✅ Found ${videoIds.length} videos from Qdrant search`);
+      console.log(
+        `✅ Found ${videoIds.length} videos from Qdrant search (after similarity filtering)`
+      );
     }
 
     // PATH 2: Get data from ClickHouse
@@ -1542,6 +1568,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
             max: durationLessThen,
           },
         },
+        similarityThreshold: searchTerm ? similarityThreshold : null,
         clickhouse_ordering: {
           order_by: order_by,
           order_direction: order_direction,
