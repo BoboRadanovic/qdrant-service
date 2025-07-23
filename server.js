@@ -131,6 +131,102 @@ async function createEmbedding(text, dimensions = 1536) {
   }
 }
 
+// Helper to call external /api/videosPublic/search-ids service
+async function fetchExternalVideoIds({
+  searchTerm,
+  categoryIds,
+  languageId,
+  videoStatus,
+  durationMoreThen,
+  durationLessThen,
+  limit,
+}) {
+  try {
+    const payload = {
+      searchTerm: searchTerm || null,
+      categoryIds: categoryIds || null,
+      language: languageId || null,
+      showVideos:
+        videoStatus !== undefined && videoStatus !== null ? videoStatus : null,
+      durationMoreThen: durationMoreThen || null,
+      durationLessThen: durationLessThen || null,
+      limit: limit || 200,
+    };
+    // Remove undefined/null keys
+    Object.keys(payload).forEach(
+      (key) => payload[key] === null && delete payload[key]
+    );
+    const response = await axios.post(
+      "http://88.99.139.239:3000/api/videosPublic/search-ids",
+      payload,
+      { timeout: 20000 }
+    );
+    if (
+      response.data &&
+      response.data.data &&
+      Array.isArray(response.data.data.videoIds)
+    ) {
+      return response.data.data.videoIds;
+    }
+    return [];
+  } catch (e) {
+    console.error("Error fetching external video IDs:", e.message);
+    return [];
+  }
+}
+
+async function fetchExternalBrandIds({
+  searchTerm,
+  categoryIds,
+  countryId,
+  softwareIds,
+  durationMoreThen,
+  durationLessThen,
+  limit,
+}) {
+  try {
+    const payload = {
+      searchTerm: searchTerm || null,
+      categoryIds: categoryIds || null,
+      countryId: countryId || null,
+      softwareIds: softwareIds || null,
+      durationMoreThen: durationMoreThen || null,
+      durationLessThen: durationLessThen || null,
+      limit: limit || 200,
+    };
+    // Remove undefined/null keys
+    Object.keys(payload).forEach(
+      (key) => payload[key] === null && delete payload[key]
+    );
+
+    const response = await axios.post(
+      "http://88.99.139.239:3000/api/videosPublic/search-brands-ids",
+      payload,
+      { timeout: 20000 }
+    );
+
+    if (
+      response.data &&
+      response.data.data &&
+      Array.isArray(response.data.data.brandIds)
+    ) {
+      return response.data.data.brandIds;
+    }
+
+    return [];
+  } catch (e) {
+    console.error("Error fetching external brand IDs:", e.message);
+    if (e.response) {
+      console.error("Error response status:", e.response.status);
+      console.error(
+        "Error response data:",
+        JSON.stringify(e.response.data, null, 2)
+      );
+    }
+    return [];
+  }
+}
+
 // Initialize Express app
 const app = express();
 
@@ -998,6 +1094,7 @@ app.get("/collection/info", async (req, res) => {
 // Enhanced video search endpoint - combines Qdrant search with ClickHouse summary data OR ClickHouse-only search
 app.post("/search/videos/enhanced", async (req, res) => {
   const startTime = performance.now();
+  console.log(`🚀 Enhanced search started at ${new Date().toISOString()}`);
 
   try {
     const {
@@ -1012,6 +1109,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       sortProp = null, // Will default based on context
       orderAsc = false, // true = asc, false = desc
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
+      userId = null, // New parameter for user identification
     } = req.body;
 
     // Validate searchTerm if provided
@@ -1030,6 +1128,17 @@ app.post("/search/videos/enhanced", async (req, res) => {
       return res.status(400).json({
         error: "Limit must be between 1 and 1000",
         code: "INVALID_LIMIT",
+      });
+    }
+
+    // Validate userId if provided
+    if (
+      userId !== null &&
+      (typeof userId !== "string" || userId.trim() === "")
+    ) {
+      return res.status(400).json({
+        error: "userId must be a non-empty string if provided",
+        code: "INVALID_USER_ID",
       });
     }
 
@@ -1067,6 +1176,21 @@ app.post("/search/videos/enhanced", async (req, res) => {
     }
     console.log("similarityThreshold", similarityThreshold);
 
+    console.log(`📋 Request parameters:`, {
+      searchTerm: searchTerm ? `"${searchTerm}"` : null,
+      limit,
+      page,
+      categoryIds,
+      languageId,
+      videoStatus,
+      durationMoreThen,
+      durationLessThen,
+      sortProp,
+      orderAsc,
+      similarityThreshold,
+      userId: userId ? "provided" : "none",
+    });
+
     // Determine default sortProp based on context
     let effectiveSortProp = sortProp;
     if (!effectiveSortProp) {
@@ -1091,150 +1215,142 @@ app.post("/search/videos/enhanced", async (req, res) => {
     const order_by =
       dbSortField === "similarity_score" ? "published_at" : dbSortField;
 
-    // Validate page
-    if (page < 1) {
-      return res.status(400).json({
-        error: "Page must be >= 1",
-        code: "INVALID_PAGE",
-      });
-    }
-
-    // Calculate offset for pagination
-    const offset = (page - 1) * limit;
-
     console.log(
       `🔍 Enhanced video search: ${
         searchTerm ? `"${searchTerm}"` : "ClickHouse-only"
-      } (limit: ${limit}, page: ${page})`
+      } (limit: ${limit}, page: ${page}, userId: ${userId || "none"})`
     );
 
     let qdrantResults = [];
+    let qdrantVideoIds = [];
     let embeddingTime = 0;
     let qdrantTime = 0;
     let videoIds = [];
+    let externalVideoIds = [];
+    let externalTime = 0;
+    let parallelExecutionTime = 0;
 
-    // PATH 1: Keyword provided - do Qdrant search first
+    // PATH 1: Keyword provided - optimized parallel execution
     if (searchTerm) {
-      console.log(`📡 Performing Qdrant semantic search for: "${searchTerm}"`);
+      console.log(
+        `📡 Starting optimized parallel search operations at ${new Date().toISOString()}`
+      );
+      console.log(
+        `📡 Performing Qdrant and external semantic search for: "${searchTerm}"`
+      );
 
-      // Step 1: Create embedding and search in Qdrant
-      const embeddingStartTime = performance.now();
-      const embedding = await createEmbedding(searchTerm.trim());
-      embeddingTime = performance.now() - embeddingStartTime;
+      // Determine if external service should be used based on search term characteristics
+      const trimmedSearchTerm = searchTerm.trim();
+      const wordCount = trimmedSearchTerm.split(/\s+/).length;
+      const totalLength = trimmedSearchTerm.length;
+      const shouldSkipExternalService = wordCount > 2 && totalLength > 10;
+      const shouldUseExternalService = !shouldSkipExternalService;
 
-      // Build filters for Qdrant search
+      console.log(`🔍 Search term analysis:`);
+      console.log(`   - Word count: ${wordCount} (max: 2)`);
+      console.log(`   - Total length: ${totalLength} (max: 10)`);
+      console.log(
+        `   - Use external service: ${shouldUseExternalService ? "YES" : "NO"}`
+      );
+      if (shouldSkipExternalService) {
+        console.log(
+          `   - ❌ Skipping external service: complex query (${wordCount} words > 2 AND ${totalLength} chars > 10)`
+        );
+      } else {
+        console.log(
+          `   - ✅ Using external service: simple query (${wordCount} words, ${totalLength} chars)`
+        );
+      }
+
+      // Step 1: Start embedding creation and external service call in parallel (if applicable)
+      const parallelStartTime = performance.now();
+
+      const embeddingPromise = createEmbedding(trimmedSearchTerm);
+
+      let externalPromise = null;
+      if (shouldUseExternalService) {
+        console.log(
+          `⚡ Starting embedding creation and external service call in parallel`
+        );
+        externalPromise = fetchExternalVideoIds({
+          searchTerm,
+          categoryIds,
+          languageId,
+          videoStatus: videoStatus === "all" ? null : videoStatus,
+          durationMoreThen,
+          durationLessThen,
+          limit,
+        });
+      } else {
+        console.log(
+          `⚡ Starting embedding creation only (external service skipped - complex query)`
+        );
+      }
+
+      // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
       const filters = { must: [] };
-
-      // console.log("🔧 Building filters with parameters:", {
-      //   categoryIds,
-      //   languageId,
-      //   videoStatus,
-      //   durationMoreThen,
-      //   durationLessThen,
-      // });
-
-      // Category ID filter (array of values)
       if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        //console.log("✅ Adding category filter:", categoryIds);
-        filters.must.push({
-          key: "category_id",
-          match: { any: categoryIds },
-        });
+        filters.must.push({ key: "category_id", match: { any: categoryIds } });
       }
-
-      // Language filter
       if (languageId && typeof languageId === "string") {
-        //console.log("✅ Adding language filter:", languageId);
-        filters.must.push({
-          key: "language",
-          match: { value: languageId },
-        });
+        filters.must.push({ key: "language", match: { value: languageId } });
       }
-
-      // Video status filter
       if (videoStatus !== "all" && typeof videoStatus === "string") {
-        //console.log("✅ Adding video status filter:", videoStatus);
         if (videoStatus === "public") {
-          // Public videos are NOT unlisted
-          filters.must.push({
-            key: "unlisted",
-            match: { value: false },
-          });
+          filters.must.push({ key: "unlisted", match: { value: false } });
         } else if (videoStatus === "unlisted") {
-          // Unlisted videos ARE unlisted
-          filters.must.push({
-            key: "unlisted",
-            match: { value: true },
-          });
+          filters.must.push({ key: "unlisted", match: { value: true } });
         }
       }
-
-      // Duration range filter
       if (durationMoreThen !== null || durationLessThen !== null) {
-        // console.log("✅ Adding duration filter:", {
-        //   durationMoreThen,
-        //   durationLessThen,
-        // });
         const durationFilter = { key: "duration", range: {} };
-
         if (durationMoreThen !== null && typeof durationMoreThen === "number") {
           durationFilter.range.gte = durationMoreThen;
         }
-
         if (durationLessThen !== null && typeof durationLessThen === "number") {
           durationFilter.range.lte = durationLessThen;
         }
-
         filters.must.push(durationFilter);
       }
 
-      //console.log("🎯 Final filters object:", JSON.stringify(filters, null, 2));
+      // Step 3: Wait for embedding to be ready, then start Qdrant search immediately
+      console.log(`🔍 Waiting for embedding to be ready...`);
+      const embedding = await embeddingPromise;
+      embeddingTime = performance.now() - parallelStartTime;
+      console.log(`✅ Embedding created in ${embeddingTime.toFixed(2)}ms`);
 
-      // Search in Qdrant
+      // Step 4: Start Qdrant search immediately (don't wait for external service)
       const qdrantStartTime = performance.now();
+      console.log(`🔍 Starting Qdrant search at ${new Date().toISOString()}`);
       const searchBody = {
         vector: embedding,
         limit: parseInt(limit),
         with_payload: true,
         with_vector: false,
-        params: {
-          hnsw_ef: 32,
-        },
+        params: { hnsw_ef: 32 },
       };
-
-      // Add filters if any were specified
       if (filters.must.length > 0) {
         searchBody.filter = filters;
-        //console.log("🎯 Filters applied to search body");
-      } else {
-        //console.log("⚠️ No filters applied - filters.must is empty");
       }
-
-      // Log search body without the large vector array (after filters are applied)
-      // const { vector, ...searchBodyWithoutVector } = searchBody;
-      // console.log(
-      //   "Search body (without vector):",
-      //   JSON.stringify(searchBodyWithoutVector, null, 2)
-      // );
-
       const searchResponse = await axios.post(
         `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
         searchBody,
-        {
-          headers: buildHeaders(),
-          timeout: 30000,
-        }
+        { headers: buildHeaders(), timeout: 30000 }
       );
-
       qdrantResults = searchResponse.data.result;
       qdrantTime = performance.now() - qdrantStartTime;
+      console.log(
+        `✅ Qdrant search completed in ${qdrantTime.toFixed(2)}ms, returned ${
+          qdrantResults.length
+        } results`
+      );
 
-      // Filter results by similarity threshold
+      // Step 5: Process Qdrant results
+      // Filter by similarity threshold
       const originalResultsCount = qdrantResults.length;
       qdrantResults = qdrantResults.filter(
         (result) => result.score >= similarityThreshold
       );
-
       if (originalResultsCount > qdrantResults.length) {
         console.log(
           `🔍 Filtered ${
@@ -1242,21 +1358,119 @@ app.post("/search/videos/enhanced", async (req, res) => {
           } results below similarity threshold ${similarityThreshold}`
         );
       }
-
       // Extract video IDs from Qdrant results
-      videoIds = qdrantResults
+      qdrantVideoIds = qdrantResults
         .sort((a, b) => b.score - a.score)
         .map((result) => result.payload?.yt_video_id || result.id);
 
+      // Step 6: Wait for external service to complete (if applicable)
+      if (externalPromise) {
+        console.log(`🌐 Waiting for external service to complete...`);
+        const extIds = await externalPromise;
+        externalTime = performance.now() - parallelStartTime;
+        externalVideoIds = extIds || [];
+        console.log(
+          `✅ External service completed in ${externalTime.toFixed(
+            2
+          )}ms, returned ${externalVideoIds.length} video IDs`
+        );
+      } else {
+        console.log(`🌐 External service skipped (complex query)`);
+        externalTime = 0;
+        externalVideoIds = [];
+      }
+
+      parallelExecutionTime = Math.max(embeddingTime, externalTime);
       console.log(
-        `✅ Found ${videoIds.length} videos from Qdrant search (after similarity filtering)`
+        `📊 Parallel execution completed in ${parallelExecutionTime.toFixed(
+          2
+        )}ms (embedding: ${embeddingTime.toFixed(
+          2
+        )}ms, external: ${externalTime.toFixed(2)}ms)`
+      );
+
+      // Step 7: Merge Qdrant and external video IDs with priority logic
+      console.log(`🔄 Merging results with priority logic (limit: ${limit})`);
+      console.log(`   - Qdrant results: ${qdrantVideoIds.length}`);
+      console.log(`   - External results: ${externalVideoIds.length}`);
+
+      // Start with all Qdrant results (they have priority)
+      const mergedVideoIds = [...qdrantVideoIds];
+      const seen = new Set(qdrantVideoIds);
+
+      // If we have less than the limit, add external results to fill up
+      if (mergedVideoIds.length < limit) {
+        const neededFromExternal = limit - mergedVideoIds.length;
+        console.log(
+          `   - Need ${neededFromExternal} more results from external service`
+        );
+
+        let addedFromExternal = 0;
+        for (const vid of externalVideoIds) {
+          if (!seen.has(vid) && addedFromExternal < neededFromExternal) {
+            mergedVideoIds.push(vid);
+            seen.add(vid);
+            addedFromExternal++;
+          }
+        }
+        console.log(
+          `   - Added ${addedFromExternal} unique results from external service`
+        );
+      } else {
+        console.log(
+          `   - Qdrant results already meet the limit, skipping external results`
+        );
+      }
+
+      videoIds = mergedVideoIds;
+      console.log(
+        `✅ Final merged result: ${videoIds.length} videos (Qdrant: ${
+          qdrantVideoIds.length
+        }, External used: ${videoIds.length - qdrantVideoIds.length})`
       );
     }
 
-    // PATH 2: Get data from ClickHouse
+    // PATH 2: Get data from ClickHouse (parallel with swiped videos if userId provided)
     let clickhouseData = [];
     let clickhouseTime = 0;
+    let swipedVideosData = [];
+    let swipedVideosTime = 0;
     const clickhouseStartTime = performance.now();
+
+    // Function to fetch swiped videos data
+    async function fetchSwipedVideos(videoIds, userId) {
+      if (!userId || !videoIds || videoIds.length === 0) {
+        return [];
+      }
+
+      try {
+        const videoIdList = videoIds
+          .map((id) => `'${id.replace(/'/g, "''")}'`)
+          .join(", ");
+
+        const swipedQuery = `
+          SELECT 
+            firebase_id,
+            yt_video_id,
+            created_at,
+            swipe_board_ids
+          FROM analytics.swiped_videos 
+          WHERE firebase_id = '${userId.replace(/'/g, "''")}' 
+          AND yt_video_id IN (${videoIdList})
+        `;
+
+        const resultSet = await clickhouse.query({
+          query: swipedQuery,
+          format: "JSONEachRow",
+        });
+
+        const data = await resultSet.json();
+        return data;
+      } catch (error) {
+        console.error("❌ Swiped videos query failed:", error.message);
+        return [];
+      }
+    }
 
     if (searchTerm && videoIds.length > 0) {
       // Case 1: We have video IDs from Qdrant search - query specific videos
@@ -1309,31 +1523,57 @@ app.post("/search/videos/enhanced", async (req, res) => {
           WHERE yt_video_id IN (${videoIdList})
           ORDER BY ${order_by} ${order_direction.toUpperCase()}
           LIMIT ${parseInt(limit)}
-          OFFSET ${parseInt(offset)}
         `;
       }
 
       console.log(
-        `📊 Querying ClickHouse for ${videoIds.length} specific video IDs`
+        `📊 Starting ClickHouse query for ${
+          videoIds.length
+        } specific video IDs at ${new Date().toISOString()}`
       );
 
-      try {
+      // Execute both queries in parallel if userId is provided
+      if (userId) {
+        console.log(
+          `🔄 Executing ClickHouse and swiped videos queries in parallel`
+        );
+        const [clickhouseResult, swipedResult] = await Promise.all([
+          clickhouse.query({
+            query: query,
+            format: "JSONEachRow",
+          }),
+          fetchSwipedVideos(videoIds, userId),
+        ]);
+
+        clickhouseData = await clickhouseResult.json();
+        swipedVideosData = swipedResult;
+      } else {
+        // Only fetch ClickHouse data if no userId
         const resultSet = await clickhouse.query({
           query: query,
           format: "JSONEachRow",
         });
 
         clickhouseData = await resultSet.json();
-        clickhouseTime = performance.now() - clickhouseStartTime;
+      }
 
-        console.log(`✅ ClickHouse returned ${clickhouseData.length} records`);
-      } catch (clickhouseError) {
-        console.error("❌ ClickHouse query failed:", clickhouseError.message);
-        clickhouseData = [];
+      clickhouseTime = performance.now() - clickhouseStartTime;
+
+      console.log(
+        `✅ ClickHouse query completed in ${clickhouseTime.toFixed(
+          2
+        )}ms, returned ${clickhouseData.length} records`
+      );
+      if (userId) {
+        console.log(
+          `✅ Swiped videos query completed, found ${swipedVideosData.length} records`
+        );
       }
     } else if (!searchTerm) {
       // Case 2: No keyword - direct ClickHouse query with filters
-      console.log(`📊 Performing direct ClickHouse search with filters`);
+      console.log(
+        `📊 Starting direct ClickHouse search with filters at ${new Date().toISOString()}`
+      );
 
       // Build WHERE clause for filters
       const whereConditions = [];
@@ -1393,7 +1633,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
         ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
-        OFFSET ${parseInt(offset)}
       `;
 
       console.log(`📊 Executing direct ClickHouse query with filters`);
@@ -1407,7 +1646,26 @@ app.post("/search/videos/enhanced", async (req, res) => {
         clickhouseData = await resultSet.json();
         clickhouseTime = performance.now() - clickhouseStartTime;
 
-        console.log(`✅ ClickHouse returned ${clickhouseData.length} records`);
+        console.log(
+          `✅ ClickHouse returned ${
+            clickhouseData.length
+          } records in ${clickhouseTime.toFixed(2)}ms`
+        );
+
+        // If userId is provided, fetch swiped videos data for the returned video IDs
+        if (userId && clickhouseData.length > 0) {
+          const returnedVideoIds = clickhouseData.map(
+            (item) => item.yt_video_id
+          );
+
+          swipedVideosData = await fetchSwipedVideos(returnedVideoIds, userId);
+          swipedVideosTime = performance.now() - clickhouseStartTime;
+          console.log(
+            `✅ Swiped videos query completed in ${swipedVideosTime.toFixed(
+              2
+            )}ms, found ${swipedVideosData.length} records`
+          );
+        }
       } catch (clickhouseError) {
         console.error("❌ ClickHouse query failed:", clickhouseError.message);
         clickhouseData = [];
@@ -1418,6 +1676,12 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     // Step 3: Format results based on search type
     const enhancedResults = [];
+
+    // Create a map of swiped videos for quick lookup
+    const swipedVideosMap = new Map();
+    swipedVideosData.forEach((item) => {
+      swipedVideosMap.set(item.yt_video_id, item);
+    });
 
     if (searchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
@@ -1430,6 +1694,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       qdrantResults.forEach((qdrantResult) => {
         const videoId = qdrantResult.payload?.yt_video_id || qdrantResult.id;
         const clickhouseInfo = clickhouseMap.get(videoId);
+        const swipedInfo = swipedVideosMap.get(videoId);
 
         const enhancedResult = {
           ytVideoId: videoId,
@@ -1443,6 +1708,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
           },
           // ClickHouse summary data (if available)
           summary_data: clickhouseInfo || null,
+          // Swiped videos data (if available)
+          swiped_data: swipedInfo || null,
         };
 
         enhancedResults.push(enhancedResult);
@@ -1450,6 +1717,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
+        const swipedInfo = swipedVideosMap.get(clickhouseResult.yt_video_id);
+
         const enhancedResult = {
           ytVideoId: clickhouseResult.yt_video_id,
           similarity_score: null, // No similarity score for direct ClickHouse search
@@ -1457,6 +1726,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
           qdrant_data: null,
           // ClickHouse summary data
           summary_data: clickhouseResult,
+          // Swiped videos data (if available)
+          swiped_data: swipedInfo || null,
         };
 
         enhancedResults.push(enhancedResult);
@@ -1523,32 +1794,37 @@ app.post("/search/videos/enhanced", async (req, res) => {
     const data = {
       page: page,
       hasMore: clickhouseData.length === limit,
-      results: enhancedResults.map((r) => ({
-        ytVideoId: r.ytVideoId,
-        isSwiped: false, // Default value - you may need to get this from another source
-        title: r.summary_data?.title || r.qdrant_data?.title || null,
-        duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
-        description: null, // Not available in current data structure
-        thumbnail: r.summary_data?.frame || null,
-        publishedAt: r.summary_data?.published_at || null,
-        totalSpend: r.summary_data?.total || null,
-        is_unlisted:
-          r.summary_data?.listed === false ||
-          r.qdrant_data?.is_unlisted ||
-          false,
-        language: r.summary_data?.language || r.qdrant_data?.language || null,
-        category:
-          r.summary_data?.category_id || r.qdrant_data?.category_id || null,
-        last30Days: r.summary_data?.last_30 ?? null,
-        last90Days: r.summary_data?.last_90 ?? null,
-        affiliateOfferId: null, // Not available in current data structure
-        brandName: r.summary_data?.brand_name || null,
-        brandId: null, // Not available in current data structure
-        // Additional fields for debugging/backward compatibility
-        similarity_score: r.similarity_score,
-        qdrant_data: r.qdrant_data,
-        summary_data: r.summary_data,
-      })),
+      results: enhancedResults.map((r) => {
+        const isSwiped = r.swiped_data ? true : false;
+
+        return {
+          ytVideoId: r.ytVideoId,
+          isSwiped: isSwiped, // Set based on swiped_videos table
+          title: r.summary_data?.title || r.qdrant_data?.title || null,
+          duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
+          description: null, // Not available in current data structure
+          thumbnail: r.summary_data?.frame || null,
+          publishedAt: r.summary_data?.published_at || null,
+          totalSpend: r.summary_data?.total || null,
+          is_unlisted:
+            r.summary_data?.listed === false ||
+            r.qdrant_data?.is_unlisted ||
+            false,
+          language: r.summary_data?.language || r.qdrant_data?.language || null,
+          category:
+            r.summary_data?.category_id || r.qdrant_data?.category_id || null,
+          last30Days: r.summary_data?.last_30 ?? null,
+          last90Days: r.summary_data?.last_90 ?? null,
+          affiliateOfferId: null, // Not available in current data structure
+          brandName: r.summary_data?.brand_name || null,
+          brandId: null, // Not available in current data structure
+          // Additional fields for debugging/backward compatibility
+          similarity_score: r.similarity_score,
+          qdrant_data: r.qdrant_data,
+          summary_data: r.summary_data,
+          swiped_data: r.swiped_data, // Include swiped data for debugging
+        };
+      }),
     };
 
     const response = {
@@ -1557,7 +1833,13 @@ app.post("/search/videos/enhanced", async (req, res) => {
       keyword: searchTerm || null,
       total_results: enhancedResults.length,
       qdrant_matches: qdrantResults.length,
+      external_matches: externalVideoIds.length,
+      external_matches_used: videoIds.length - qdrantVideoIds.length,
+      external_service_used: searchTerm
+        ? externalVideoIds.length > 0 || externalTime > 0
+        : false,
       clickhouse_matches: clickhouseData.length,
+      swiped_matches: swipedVideosData.length,
       parameters: {
         search_filters: {
           category_id: categoryIds,
@@ -1568,20 +1850,32 @@ app.post("/search/videos/enhanced", async (req, res) => {
             max: durationLessThen,
           },
         },
+        search_term_analysis: searchTerm
+          ? {
+              word_count: searchTerm.trim().split(/\s+/).length,
+              total_length: searchTerm.trim().length,
+              should_use_external: !(
+                searchTerm.trim().split(/\s+/).length <= 2 &&
+                searchTerm.trim().length <= 10
+              ),
+            }
+          : null,
         similarityThreshold: searchTerm ? similarityThreshold : null,
         clickhouse_ordering: {
           order_by: order_by,
           order_direction: order_direction,
         },
         limit: parseInt(limit),
-        page: parseInt(page),
-        offset: parseInt(offset),
+        userId: userId,
       },
       timing: {
         total_ms: Math.round(totalTime),
+        parallel_execution_ms: Math.round(parallelExecutionTime),
         embedding_ms: Math.round(embeddingTime),
         qdrant_search_ms: Math.round(qdrantTime),
         clickhouse_query_ms: Math.round(clickhouseTime),
+        swiped_videos_query_ms: Math.round(swipedVideosTime),
+        external_service_ms: Math.round(externalTime),
       },
       data: data,
     };
@@ -1592,8 +1886,25 @@ app.post("/search/videos/enhanced", async (req, res) => {
     console.log(
       `✅ Enhanced search (${searchTypeDesc}) completed in ${totalTime.toFixed(
         2
-      )}ms - ${enhancedResults.length} results`
+      )}ms - ${enhancedResults.length} results (Qdrant: ${
+        qdrantResults.length
+      }, External available: ${externalVideoIds.length}, External used: ${
+        videoIds.length - qdrantVideoIds.length
+      }, ClickHouse: ${clickhouseData.length}, Swiped: ${
+        swipedVideosData.length
+      })`
     );
+    console.log(`📊 Final timing breakdown:`);
+    console.log(`   - Total time: ${totalTime.toFixed(2)}ms`);
+    console.log(
+      `   - Parallel execution: ${parallelExecutionTime.toFixed(2)}ms`
+    );
+    console.log(`   - Embedding: ${embeddingTime.toFixed(2)}ms`);
+    console.log(`   - External service: ${externalTime.toFixed(2)}ms`);
+    console.log(`   - Qdrant search: ${qdrantTime.toFixed(2)}ms`);
+    console.log(`   - ClickHouse query: ${clickhouseTime.toFixed(2)}ms`);
+    console.log(`   - Swiped videos: ${swipedVideosTime.toFixed(2)}ms`);
+    console.log(`🏁 Response sent at ${new Date().toISOString()}`);
 
     res.status(200).json(response);
   } catch (error) {
@@ -1602,6 +1913,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       `❌ Enhanced search error (after ${totalTime.toFixed(2)}ms):`,
       error.message
     );
+    console.error(`🚨 Error occurred at ${new Date().toISOString()}`);
 
     // Handle specific error types
     if (error.code === "ECONNREFUSED") {
@@ -1917,6 +2229,861 @@ app.get("/debug/companies-data", async (req, res) => {
   }
 });
 
+// Enhanced brand search endpoint - combines Qdrant search with ClickHouse summary data OR ClickHouse-only search
+app.post("/search/brands/enhanced", async (req, res) => {
+  const startTime = performance.now();
+  console.log(
+    `🚀 Enhanced brand search started at ${new Date().toISOString()}`
+  );
+
+  try {
+    const {
+      searchTerm = null, // Now optional
+      limit = DEFAULT_LIMIT,
+      categoryIds = null,
+      countryId = null,
+      softwareIds = null,
+      durationMoreThen = null,
+      durationLessThen = null,
+      sortProp = null, // Will default based on context
+      orderAsc = false, // true = asc, false = desc
+      similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
+      userId = null, // New parameter for user identification
+    } = req.body;
+
+    // Validate searchTerm if provided
+    if (
+      searchTerm !== null &&
+      (typeof searchTerm !== "string" || searchTerm.trim() === "")
+    ) {
+      return res.status(400).json({
+        error: "searchTerm must be a non-empty string if provided",
+        code: "INVALID_SEARCH_TERM",
+      });
+    }
+
+    // Validate limit
+    if (limit < 1 || limit > 1000) {
+      return res.status(400).json({
+        error: "Limit must be between 1 and 1000",
+        code: "INVALID_LIMIT",
+      });
+    }
+
+    // Validate userId if provided
+    if (
+      userId !== null &&
+      (typeof userId !== "string" || userId.trim() === "")
+    ) {
+      return res.status(400).json({
+        error: "userId must be a non-empty string if provided",
+        code: "INVALID_USER_ID",
+      });
+    }
+
+    // Validate sortProp field (if provided)
+    const validOrderFields = ["totalSpend", "similarity_score"];
+    if (sortProp && !validOrderFields.includes(sortProp)) {
+      return res.status(400).json({
+        error: `sortProp must be one of: ${validOrderFields.join(
+          ", "
+        )} or null for auto-detection`,
+        code: "INVALID_SORT_PROP",
+      });
+    }
+
+    // Validate orderAsc (boolean)
+    if (typeof orderAsc !== "boolean") {
+      return res.status(400).json({
+        error: "orderAsc must be a boolean (true = asc, false = desc)",
+        code: "INVALID_ORDER_ASC",
+      });
+    }
+
+    // Validate similarityThreshold
+    if (similarityThreshold < 0 || similarityThreshold > 1) {
+      return res.status(400).json({
+        error: "similarityThreshold must be between 0.0 and 1.0",
+        code: "INVALID_similarityThreshold",
+      });
+    }
+
+    console.log(`📋 Request parameters:`, {
+      searchTerm: searchTerm ? `"${searchTerm}"` : null,
+      limit,
+      categoryIds,
+      countryId,
+      softwareIds,
+      durationMoreThen,
+      durationLessThen,
+      sortProp,
+      orderAsc,
+      similarityThreshold,
+      userId: userId ? "provided" : "none",
+    });
+
+    // Determine default sortProp based on context
+    let effectiveSortProp = sortProp;
+    if (!effectiveSortProp) {
+      effectiveSortProp = searchTerm ? "similarity_score" : "totalSpend";
+    }
+
+    // Map frontend sortProp names to database field names
+    const sortPropMapping = {
+      totalSpend: "total_spend",
+      similarity_score: "similarity_score",
+    };
+
+    // Convert frontend sortProp to database field name
+    const dbSortField = sortPropMapping[effectiveSortProp] || effectiveSortProp;
+
+    // Convert orderAsc to order_direction string
+    const order_direction = orderAsc ? "asc" : "desc";
+    // For ClickHouse queries, use total_spend as fallback when sorting by similarity_score
+    const order_by =
+      dbSortField === "similarity_score" ? "total_spend" : dbSortField;
+
+    console.log(
+      `🔍 Enhanced brand search: ${
+        searchTerm ? `"${searchTerm}"` : "ClickHouse-only"
+      } (limit: ${limit}, userId: ${userId || "none"})`
+    );
+
+    let qdrantResults = [];
+    let qdrantBrandIds = [];
+    let embeddingTime = 0;
+    let qdrantTime = 0;
+    let externalVideoIds = [];
+    let externalTime = 0;
+    let parallelExecutionTime = 0;
+    let brandIds = [];
+
+    // PATH 1: Keyword provided - optimized parallel execution
+    if (searchTerm) {
+      console.log(
+        `📡 Starting optimized parallel search operations at ${new Date().toISOString()}`
+      );
+      console.log(
+        `📡 Performing Qdrant and external semantic search for: "${searchTerm}"`
+      );
+
+      // Step 1: Start embedding creation and external service call in parallel
+      const parallelStartTime = performance.now();
+
+      const embeddingPromise = createEmbedding(searchTerm.trim(), 384); // 384 dimensions for brands
+
+      console.log(
+        `⚡ Starting embedding creation and external service call in parallel`
+      );
+      const externalPromise = fetchExternalBrandIds({
+        searchTerm,
+        categoryIds,
+        countryId,
+        softwareIds,
+        durationMoreThen,
+        durationLessThen,
+        limit,
+      });
+
+      // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
+      const filters = { must: [] };
+      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        filters.must.push({ key: "category_id", match: { any: categoryIds } });
+      }
+      if (countryId && typeof countryId === "number") {
+        filters.must.push({ key: "country_id", match: { value: countryId } });
+      }
+      if (softwareIds && Array.isArray(softwareIds) && softwareIds.length > 0) {
+        filters.must.push({ key: "software_id", match: { any: softwareIds } });
+      }
+      if (durationMoreThen !== null || durationLessThen !== null) {
+        const durationFilter = { key: "average_video_duration", range: {} };
+        if (durationMoreThen !== null && typeof durationMoreThen === "number") {
+          durationFilter.range.gte = durationMoreThen;
+        }
+        if (durationLessThen !== null && typeof durationLessThen === "number") {
+          durationFilter.range.lte = durationLessThen;
+        }
+        filters.must.push(durationFilter);
+      }
+
+      // Step 3: Wait for embedding to be ready, then start Qdrant search immediately
+      console.log(`🔍 Waiting for embedding to be ready...`);
+      const embedding = await embeddingPromise;
+      embeddingTime = performance.now() - parallelStartTime;
+      console.log(`✅ Embedding created in ${embeddingTime.toFixed(2)}ms`);
+
+      // Step 4: Start Qdrant search immediately (don't wait for external service)
+      const qdrantStartTime = performance.now();
+      console.log(
+        `🔍 Starting Qdrant brand search at ${new Date().toISOString()}`
+      );
+      const searchBody = {
+        vector: embedding,
+        limit: parseInt(limit),
+        with_payload: true,
+        with_vector: false,
+        params: { hnsw_ef: 32 },
+      };
+      if (filters.must.length > 0) {
+        searchBody.filter = filters;
+      }
+      const searchResponse = await axios.post(
+        `${qdrantUrl}/collections/${COLLECTION_NAME_BRANDS}/points/search`,
+        searchBody,
+        { headers: buildHeaders(), timeout: 30000 }
+      );
+      qdrantResults = searchResponse.data.result;
+      qdrantTime = performance.now() - qdrantStartTime;
+      console.log(
+        `✅ Qdrant brand search completed in ${qdrantTime.toFixed(
+          2
+        )}ms, returned ${qdrantResults.length} results`
+      );
+
+      // Step 5: Process Qdrant results
+      // Filter by similarity threshold
+      const originalResultsCount = qdrantResults.length;
+      qdrantResults = qdrantResults.filter(
+        (result) => result.score >= similarityThreshold
+      );
+      if (originalResultsCount > qdrantResults.length) {
+        console.log(
+          `🔍 Filtered ${
+            originalResultsCount - qdrantResults.length
+          } results below similarity threshold ${similarityThreshold}`
+        );
+      }
+      // Extract brand IDs from Qdrant results
+      qdrantBrandIds = qdrantResults
+        .sort((a, b) => b.score - a.score)
+        .map((result) => result.payload?.brand_id || result.id);
+
+      // Step 6: Wait for external service to complete
+      console.log(`🌐 Waiting for external service to complete...`);
+      const extIds = await externalPromise;
+      externalTime = performance.now() - parallelStartTime;
+      externalVideoIds = extIds || [];
+      console.log(
+        `✅ External service completed in ${externalTime.toFixed(
+          2
+        )}ms, returned ${externalVideoIds.length} brand IDs`
+      );
+
+      // Debug: Show first few brand IDs from external service
+      if (externalVideoIds.length > 0) {
+        console.log(
+          `🔍 First 5 external brand IDs:`,
+          externalVideoIds.slice(0, 5)
+        );
+      }
+
+      parallelExecutionTime = Math.max(embeddingTime, externalTime);
+      console.log(
+        `📊 Parallel execution completed in ${parallelExecutionTime.toFixed(
+          2
+        )}ms (embedding: ${embeddingTime.toFixed(
+          2
+        )}ms, external: ${externalTime.toFixed(2)}ms)`
+      );
+
+      // Step 7: Merge Qdrant and external brand IDs with priority logic
+      console.log(`🔄 Merging results with priority logic (limit: ${limit})`);
+      console.log(`   - Qdrant results: ${qdrantBrandIds.length}`);
+      console.log(`   - External results: ${externalVideoIds.length}`);
+
+      // Start with all Qdrant results (they have priority)
+      const mergedBrandIds = [...qdrantBrandIds];
+      const seen = new Set(qdrantBrandIds);
+
+      // If we have less than the limit, add external results to fill up
+      if (mergedBrandIds.length < limit) {
+        const neededFromExternal = limit - mergedBrandIds.length;
+        console.log(
+          `   - Need ${neededFromExternal} more results from external service`
+        );
+
+        let addedFromExternal = 0;
+        for (const bid of externalVideoIds) {
+          if (!seen.has(bid) && addedFromExternal < neededFromExternal) {
+            mergedBrandIds.push(bid);
+            seen.add(bid);
+            addedFromExternal++;
+          }
+        }
+        console.log(
+          `   - Added ${addedFromExternal} unique results from external service`
+        );
+      } else {
+        console.log(
+          `   - Qdrant results already meet the limit, skipping external results`
+        );
+      }
+
+      brandIds = mergedBrandIds;
+      console.log(
+        `✅ Final merged result: ${brandIds.length} brands (Qdrant: ${
+          qdrantBrandIds.length
+        }, External used: ${brandIds.length - qdrantBrandIds.length})`
+      );
+
+      // Debug: Show final brand IDs that will be queried
+      if (brandIds.length > 0) {
+        console.log(`🔍 Final brand IDs to query:`, brandIds.slice(0, 5));
+      }
+    }
+
+    // PATH 2: Get data from ClickHouse (parallel with swiped brands if userId provided)
+    let clickhouseData = [];
+    let clickhouseTime = 0;
+    let swipedBrandsData = [];
+    let swipedBrandsTime = 0;
+    const clickhouseStartTime = performance.now();
+
+    // Function to fetch swiped brands data
+    async function fetchSwipedBrands(brandIds, userId) {
+      if (!userId || !brandIds || brandIds.length === 0) {
+        return [];
+      }
+
+      try {
+        const brandIdList = brandIds
+          .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+          .join(", ");
+
+        const swipedQuery = `
+          SELECT 
+            firebase_id,
+            brand_id,
+            created_at,
+            swipe_board_ids
+          FROM analytics.swiped_brands 
+          WHERE firebase_id = '${userId.replace(/'/g, "''")}' 
+          AND brand_id IN (${brandIdList})
+        `;
+
+        const resultSet = await clickhouse.query({
+          query: swipedQuery,
+          format: "JSONEachRow",
+        });
+
+        const data = await resultSet.json();
+        return data;
+      } catch (error) {
+        console.error("❌ Swiped brands query failed:", error.message);
+        return [];
+      }
+    }
+
+    if (searchTerm && brandIds.length > 0) {
+      // Case 1: We have brand IDs from Qdrant search - query specific brands
+      const brandIdList = brandIds
+        .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+        .join(", ");
+
+      let query;
+
+      if (effectiveSortProp === "similarity_score") {
+        // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
+        query = `
+          SELECT 
+            bb.brand_id,
+            COALESCE(bs.views_7, 0) as views_7,
+            COALESCE(bs.views_14, 0) as views_14,
+            COALESCE(bs.views_21, 0) as views_21,
+            COALESCE(bs.views_30, 0) as views_30,
+            COALESCE(bs.views_90, 0) as views_90,
+            COALESCE(bs.views_365, 0) as views_365,
+            COALESCE(bs.views_720, 0) as views_720,
+            COALESCE(bs.total_views, 0) as total_views,
+            COALESCE(bs.spend_7, 0) as spend_7,
+            COALESCE(bs.spend_14, 0) as spend_14,
+            COALESCE(bs.spend_21, 0) as spend_21,
+            COALESCE(bs.spend_30, 0) as spend_30,
+            COALESCE(bs.spend_90, 0) as spend_90,
+            COALESCE(bs.spend_365, 0) as spend_365,
+            COALESCE(bs.spend_720, 0) as spend_720,
+            COALESCE(bs.total_spend, 0) as total_spend,
+            bs.date as summary_date,
+            bb.name,
+            bb.description,
+            bb.category_id,
+            bb.country_id,
+            bb.avg_duration,
+            bb.updated_at
+          FROM analytics.brand_basic bb
+          LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
+          WHERE bb.brand_id IN (${brandIdList})
+        `;
+      } else {
+        // For other sort fields, use ClickHouse ordering
+        query = `
+          SELECT 
+            bb.brand_id,
+            COALESCE(bs.views_7, 0) as views_7,
+            COALESCE(bs.views_14, 0) as views_14,
+            COALESCE(bs.views_21, 0) as views_21,
+            COALESCE(bs.views_30, 0) as views_30,
+            COALESCE(bs.views_90, 0) as views_90,
+            COALESCE(bs.views_365, 0) as views_365,
+            COALESCE(bs.views_720, 0) as views_720,
+            COALESCE(bs.total_views, 0) as total_views,
+            COALESCE(bs.spend_7, 0) as spend_7,
+            COALESCE(bs.spend_14, 0) as spend_14,
+            COALESCE(bs.spend_21, 0) as spend_21,
+            COALESCE(bs.spend_30, 0) as spend_30,
+            COALESCE(bs.spend_90, 0) as spend_90,
+            COALESCE(bs.spend_365, 0) as spend_365,
+            COALESCE(bs.spend_720, 0) as spend_720,
+            COALESCE(bs.total_spend, 0) as total_spend,
+            bs.date as summary_date,
+            bb.name,
+            bb.description,
+            bb.category_id,
+            bb.country_id,
+            bb.avg_duration,
+            bb.updated_at
+          FROM analytics.brand_basic bb
+          LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
+          WHERE bb.brand_id IN (${brandIdList})
+          ORDER BY ${order_by} ${order_direction.toUpperCase()}
+          LIMIT ${parseInt(limit)}
+        `;
+      }
+
+      console.log(
+        `📊 Starting ClickHouse query for ${
+          brandIds.length
+        } specific brand IDs at ${new Date().toISOString()}`
+      );
+      console.log(`🔍 ClickHouse query to execute:`, query);
+
+      // Execute both queries in parallel if userId is provided
+      if (userId) {
+        console.log(
+          `🔄 Executing ClickHouse and swiped brands queries in parallel`
+        );
+        const [clickhouseResult, swipedResult] = await Promise.all([
+          clickhouse.query({
+            query: query,
+            format: "JSONEachRow",
+          }),
+          fetchSwipedBrands(brandIds, userId),
+        ]);
+
+        clickhouseData = await clickhouseResult.json();
+        swipedBrandsData = swipedResult;
+      } else {
+        // Only fetch ClickHouse data if no userId
+        const resultSet = await clickhouse.query({
+          query: query,
+          format: "JSONEachRow",
+        });
+
+        clickhouseData = await resultSet.json();
+      }
+
+      clickhouseTime = performance.now() - clickhouseStartTime;
+
+      console.log(
+        `✅ ClickHouse query completed in ${clickhouseTime.toFixed(
+          2
+        )}ms, returned ${clickhouseData.length} records`
+      );
+
+      // Debug: If no results, check the brand_summary table
+      if (clickhouseData.length === 0 && brandIds.length > 0) {
+        console.log(
+          `🔍 No results found in brand_summary table. Checking table status...`
+        );
+        try {
+          const countQuery = `SELECT count() as total FROM analytics.brand_summary LIMIT 1`;
+          const countResult = await clickhouse.query({
+            query: countQuery,
+            format: "JSONEachRow",
+          });
+          const countData = await countResult.json();
+          console.log(
+            `🔍 brand_summary table has ${countData[0]?.total || 0} total rows`
+          );
+
+          // Show a few sample brand_ids from the table
+          const sampleQuery = `SELECT bb.brand_id, bb.name FROM analytics.brand_basic bb LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id LIMIT 5`;
+          const sampleResult = await clickhouse.query({
+            query: sampleQuery,
+            format: "JSONEachRow",
+          });
+          const sampleData = await sampleResult.json();
+          console.log(
+            `🔍 Sample brand_ids in table:`,
+            sampleData.map((r) => ({ brand_id: r.brand_id, name: r.name }))
+          );
+
+          // Show the exact query we're trying to execute
+          console.log(`🔍 Query we executed:`, query);
+          console.log(`🔍 Brand IDs we searched for:`, brandIds.slice(0, 10));
+        } catch (error) {
+          console.error(
+            `❌ Error checking brand_summary table:`,
+            error.message
+          );
+        }
+      }
+
+      if (userId) {
+        console.log(
+          `✅ Swiped brands query completed, found ${swipedBrandsData.length} records`
+        );
+      }
+    } else if (!searchTerm) {
+      // Case 2: No keyword - direct ClickHouse query with filters
+      console.log(
+        `📊 Starting direct ClickHouse brand search with filters at ${new Date().toISOString()}`
+      );
+
+      // Build WHERE clause for filters
+      // Note: brand_summary table only contains brand_id, views, spend, and date
+      // Category, country, software, and duration filters are not available in this table
+      const whereClause = "";
+
+      const query = `
+        SELECT 
+          bb.brand_id,
+          COALESCE(bs.views_7, 0) as views_7,
+          COALESCE(bs.views_14, 0) as views_14,
+          COALESCE(bs.views_21, 0) as views_21,
+          COALESCE(bs.views_30, 0) as views_30,
+          COALESCE(bs.views_90, 0) as views_90,
+          COALESCE(bs.views_365, 0) as views_365,
+          COALESCE(bs.views_720, 0) as views_720,
+          COALESCE(bs.total_views, 0) as total_views,
+          COALESCE(bs.spend_7, 0) as spend_7,
+          COALESCE(bs.spend_14, 0) as spend_14,
+          COALESCE(bs.spend_21, 0) as spend_21,
+          COALESCE(bs.spend_30, 0) as spend_30,
+          COALESCE(bs.spend_90, 0) as spend_90,
+          COALESCE(bs.spend_365, 0) as spend_365,
+          COALESCE(bs.spend_720, 0) as spend_720,
+          COALESCE(bs.total_spend, 0) as total_spend,
+          bs.date as summary_date,
+          bb.name,
+          bb.description,
+          bb.category_id,
+          bb.country_id,
+          bb.avg_duration,
+          bb.updated_at
+        FROM analytics.brand_basic bb
+        LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
+        ${whereClause}
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}
+        LIMIT ${parseInt(limit)}
+      `;
+
+      console.log(`📊 Executing direct ClickHouse brand query with filters`);
+
+      try {
+        const resultSet = await clickhouse.query({
+          query: query,
+          format: "JSONEachRow",
+        });
+
+        clickhouseData = await resultSet.json();
+        clickhouseTime = performance.now() - clickhouseStartTime;
+
+        console.log(
+          `✅ ClickHouse returned ${
+            clickhouseData.length
+          } records in ${clickhouseTime.toFixed(2)}ms`
+        );
+
+        // If userId is provided, fetch swiped brands data for the returned brand IDs
+        if (userId && clickhouseData.length > 0) {
+          const returnedBrandIds = clickhouseData.map((item) => item.brand_id);
+
+          swipedBrandsData = await fetchSwipedBrands(returnedBrandIds, userId);
+          swipedBrandsTime = performance.now() - clickhouseStartTime;
+          console.log(
+            `✅ Swiped brands query completed in ${swipedBrandsTime.toFixed(
+              2
+            )}ms, found ${swipedBrandsData.length} records`
+          );
+        }
+      } catch (clickhouseError) {
+        console.error(
+          "❌ ClickHouse brand query failed:",
+          clickhouseError.message
+        );
+        clickhouseData = [];
+      }
+    }
+
+    const totalTime = performance.now() - startTime;
+
+    // Step 3: Format results based on search type
+    const enhancedResults = [];
+
+    // Create a map of swiped brands for quick lookup
+    const swipedBrandsMap = new Map();
+    swipedBrandsData.forEach((item) => {
+      swipedBrandsMap.set(item.brand_id, item);
+    });
+
+    if (searchTerm) {
+      // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
+      const clickhouseMap = new Map();
+      clickhouseData.forEach((item) => {
+        clickhouseMap.set(item.brand_id, item);
+      });
+
+      // Combine Qdrant results with ClickHouse data
+      qdrantResults.forEach((qdrantResult) => {
+        const brandId = qdrantResult.payload?.brand_id || qdrantResult.id;
+        const clickhouseInfo = clickhouseMap.get(brandId);
+        const swipedInfo = swipedBrandsMap.get(brandId);
+
+        const enhancedResult = {
+          brandId: brandId,
+          similarity_score: qdrantResult.score,
+          // Qdrant payload data
+          qdrant_data: {
+            category_id: qdrantResult.payload?.category_id,
+            country_id: qdrantResult.payload?.country_id,
+            software_id: qdrantResult.payload?.software_id,
+            average_video_duration:
+              qdrantResult.payload?.average_video_duration,
+            name: qdrantResult.payload?.name,
+            thumbnail: qdrantResult.payload?.thumbnail,
+          },
+          // ClickHouse summary data (if available)
+          summary_data: clickhouseInfo || null,
+          // Swiped brands data (if available)
+          swiped_data: swipedInfo || null,
+        };
+
+        enhancedResults.push(enhancedResult);
+      });
+
+      // Also include brands from external service that have ClickHouse data but no Qdrant data
+      const processedBrandIds = new Set(
+        qdrantResults.map((r) => r.payload?.brand_id || r.id)
+      );
+
+      clickhouseData.forEach((clickhouseResult) => {
+        if (!processedBrandIds.has(clickhouseResult.brand_id)) {
+          const swipedInfo = swipedBrandsMap.get(clickhouseResult.brand_id);
+
+          const enhancedResult = {
+            brandId: clickhouseResult.brand_id,
+            similarity_score: null, // No similarity score for external-only results
+            // Qdrant payload data (null since not in Qdrant)
+            qdrant_data: null,
+            // ClickHouse summary data
+            summary_data: clickhouseResult,
+            // Swiped brands data (if available)
+            swiped_data: swipedInfo || null,
+          };
+
+          enhancedResults.push(enhancedResult);
+        }
+      });
+    } else {
+      // Case 2: ClickHouse-only search - format ClickHouse data directly
+      clickhouseData.forEach((clickhouseResult) => {
+        const swipedInfo = swipedBrandsMap.get(clickhouseResult.brand_id);
+
+        const enhancedResult = {
+          brandId: clickhouseResult.brand_id,
+          similarity_score: null, // No similarity score for direct ClickHouse search
+          // No Qdrant data available
+          qdrant_data: null,
+          // ClickHouse summary data
+          summary_data: clickhouseResult,
+          // Swiped brands data (if available)
+          swiped_data: swipedInfo || null,
+        };
+
+        enhancedResults.push(enhancedResult);
+      });
+    }
+
+    // Sort results based on the effective sort property
+    if (searchTerm) {
+      // When we have searchTerm, we need to sort the combined results
+      if (effectiveSortProp === "similarity_score") {
+        // Only sort by similarity when no sortProp was provided or explicitly requested
+        console.log(
+          `🔄 Sorting by similarity_score (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          const scoreA = a.similarity_score || 0;
+          const scoreB = b.similarity_score || 0;
+          return orderAsc ? scoreA - scoreB : scoreB - scoreA;
+        });
+      } else {
+        // Sort by the specified field (prioritize user choice)
+        console.log(
+          `🔄 Sorting by ${effectiveSortProp} (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          let valueA, valueB;
+
+          switch (dbSortField) {
+            case "total_spend":
+              valueA = a.summary_data?.total_spend ?? 0;
+              valueB = b.summary_data?.total_spend ?? 0;
+              break;
+            default:
+              valueA = a.summary_data?.[dbSortField] ?? 0;
+              valueB = b.summary_data?.[dbSortField] ?? 0;
+          }
+
+          return orderAsc ? valueA - valueB : valueB - valueA;
+        });
+      }
+    } else {
+      console.log(
+        `🔄 ClickHouse-only search, sorted by ${order_by} (${order_direction})`
+      );
+    }
+
+    // Format response to match frontend expectations (based on original fullSearch structure)
+    const data = {
+      results: enhancedResults.map((r) => {
+        const isSwiped = r.swiped_data ? true : false;
+
+        return {
+          brandId: r.brandId,
+          isSwiped: isSwiped, // Set based on swiped_brands table
+          name: r.summary_data?.name || r.qdrant_data?.name || null,
+          description: r.summary_data?.description || null,
+          thumbnail: r.qdrant_data?.thumbnail || null,
+          countryId:
+            r.summary_data?.country_id || r.qdrant_data?.country_id || null,
+          categoryId:
+            r.summary_data?.category_id || r.qdrant_data?.category_id || null,
+          totalSpend: r.summary_data?.total_spend || null,
+          averageVideoDuration:
+            r.summary_data?.avg_duration ||
+            r.qdrant_data?.average_video_duration ||
+            null,
+          // Additional fields for debugging/backward compatibility
+          similarity_score: r.similarity_score,
+          qdrant_data: r.qdrant_data,
+          summary_data: r.summary_data,
+          swiped_data: r.swiped_data, // Include swiped data for debugging
+        };
+      }),
+    };
+
+    const response = {
+      success: true,
+      search_type: searchTerm ? "semantic_plus_clickhouse" : "clickhouse_only",
+      keyword: searchTerm || null,
+      total_results: enhancedResults.length,
+      qdrant_matches: qdrantResults.length,
+      external_matches: externalVideoIds.length,
+      external_matches_used: brandIds.length - qdrantBrandIds.length,
+      external_service_used: searchTerm
+        ? externalVideoIds.length > 0 || externalTime > 0
+        : false,
+      clickhouse_matches: clickhouseData.length,
+      swiped_matches: swipedBrandsData.length,
+      parameters: {
+        search_filters: {
+          category_id: categoryIds,
+          country_id: countryId,
+          software_id: softwareIds,
+          duration_range: {
+            min: durationMoreThen,
+            max: durationLessThen,
+          },
+        },
+        similarityThreshold: searchTerm ? similarityThreshold : null,
+        clickhouse_ordering: {
+          order_by: order_by,
+          order_direction: order_direction,
+        },
+        limit: parseInt(limit),
+        userId: userId,
+      },
+      timing: {
+        total_ms: Math.round(totalTime),
+        parallel_execution_ms: Math.round(parallelExecutionTime),
+        embedding_ms: Math.round(embeddingTime),
+        qdrant_search_ms: Math.round(qdrantTime),
+        clickhouse_query_ms: Math.round(clickhouseTime),
+        swiped_brands_query_ms: Math.round(swipedBrandsTime),
+        external_service_ms: Math.round(externalTime),
+      },
+      data: data,
+    };
+
+    const searchTypeDesc = searchTerm
+      ? `semantic + ClickHouse`
+      : `ClickHouse-only`;
+    console.log(
+      `✅ Enhanced brand search (${searchTypeDesc}) completed in ${totalTime.toFixed(
+        2
+      )}ms - ${enhancedResults.length} results (Qdrant: ${
+        qdrantResults.length
+      }, External available: ${externalVideoIds.length}, External used: ${
+        brandIds.length - qdrantBrandIds.length
+      }, ClickHouse: ${clickhouseData.length}, Swiped: ${
+        swipedBrandsData.length
+      })`
+    );
+    console.log(`📊 Final timing breakdown:`);
+    console.log(`   - Total time: ${totalTime.toFixed(2)}ms`);
+    console.log(
+      `   - Parallel execution: ${parallelExecutionTime.toFixed(2)}ms`
+    );
+    console.log(`   - Embedding: ${embeddingTime.toFixed(2)}ms`);
+    console.log(`   - External service: ${externalTime.toFixed(2)}ms`);
+    console.log(`   - Qdrant search: ${qdrantTime.toFixed(2)}ms`);
+    console.log(`   - ClickHouse query: ${clickhouseTime.toFixed(2)}ms`);
+    console.log(`   - Swiped brands: ${swipedBrandsTime.toFixed(2)}ms`);
+    console.log(`🏁 Response sent at ${new Date().toISOString()}`);
+
+    res.status(200).json(response);
+  } catch (error) {
+    const totalTime = performance.now() - startTime;
+    console.error(
+      `❌ Enhanced brand search error (after ${totalTime.toFixed(2)}ms):`,
+      error.message
+    );
+    console.error(`🚨 Error occurred at ${new Date().toISOString()}`);
+
+    // Handle specific error types
+    if (error.code === "ECONNREFUSED") {
+      return res.status(503).json({
+        error: "Unable to connect to Qdrant service",
+        code: "QDRANT_UNAVAILABLE",
+      });
+    }
+
+    if (error.response?.status === 404) {
+      return res.status(404).json({
+        error: `Collection '${COLLECTION_NAME_BRANDS}' not found`,
+        code: "COLLECTION_NOT_FOUND",
+      });
+    }
+
+    if (error.message.includes("Failed to create embedding")) {
+      return res.status(503).json({
+        error: "Failed to create embedding",
+        code: "EMBEDDING_ERROR",
+      });
+    }
+
+    res.status(500).json({
+      error: "Internal server error",
+      code: "INTERNAL_ERROR",
+      message:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`🚀 QDrant Search Service started on port ${PORT}`);
@@ -1948,6 +3115,9 @@ app.listen(PORT, async () => {
   );
   console.log(
     `  POST /search/brands/filtered - Filtered brand search with category_id, country_id, software_id`
+  );
+  console.log(
+    `  POST /search/brands/enhanced - Dual-mode: Semantic search (with keyword) OR ClickHouse-only (without keyword)`
   );
   console.log(
     `  POST /search/companies/filtered - Filtered company search with category_id, country_id, software_id`
