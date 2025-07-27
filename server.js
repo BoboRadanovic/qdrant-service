@@ -1116,6 +1116,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
     // Convert categoryIds=0 to null
     const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
+    // Convert empty string sortProp to null
+    const normalizedSortProp = sortProp === "" ? null : sortProp;
 
     // Validate searchTerm if provided
     if (
@@ -1156,7 +1158,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       "total",
       "similarity_score",
     ];
-    if (sortProp && !validOrderFields.includes(sortProp)) {
+    if (normalizedSortProp && !validOrderFields.includes(normalizedSortProp)) {
       return res.status(400).json({
         error: `sortProp must be one of: ${validOrderFields.join(
           ", "
@@ -1190,18 +1192,18 @@ app.post("/search/videos/enhanced", async (req, res) => {
       videoStatus,
       durationMoreThen,
       durationLessThen,
-      sortProp,
+      sortProp: normalizedSortProp,
       orderAsc,
       similarityThreshold,
       userId: userId ? "provided" : "none",
     });
 
     // Determine default sortProp based on context
-    let effectiveSortProp = sortProp;
+    let effectiveSortProp = normalizedSortProp;
     if (!effectiveSortProp) {
       effectiveSortProp = normalizedSearchTerm
         ? "similarity_score"
-        : "publishedAt";
+        : "totalSpend";
     }
 
     // Map frontend sortProp names to database field names
@@ -2265,7 +2267,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       softwareIds = null,
       durationMoreThen = null,
       durationLessThen = null,
-      sortProp = null, // Will default based on context
+      sortProp = "totalSpend", // Default to totalSpend if not provided
       orderAsc = false, // true = asc, false = desc
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
       userId = null, // New parameter for user identification
@@ -2277,6 +2279,15 @@ app.post("/search/brands/enhanced", async (req, res) => {
     const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
     // Convert countryId=0 to null
     const normalizedCountryId = countryId === 0 ? null : countryId;
+    // Convert empty string sortProp to totalSpend and 'total' to 'totalSpend'
+    const normalizedSortProp =
+      sortProp === ""
+        ? "totalSpend"
+        : sortProp === "total"
+        ? "totalSpend"
+        : sortProp;
+
+    console.log("normalizedSortProp", normalizedSortProp);
 
     // Validate searchTerm if provided
     if (
@@ -2310,8 +2321,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
     }
 
     // Validate sortProp field (if provided)
+    console.log("normalizedSortProp", normalizedSortProp);
     const validOrderFields = ["totalSpend", "similarity_score"];
-    if (sortProp && !validOrderFields.includes(sortProp)) {
+    if (normalizedSortProp && !validOrderFields.includes(normalizedSortProp)) {
       return res.status(400).json({
         error: `sortProp must be one of: ${validOrderFields.join(
           ", "
@@ -2344,14 +2356,14 @@ app.post("/search/brands/enhanced", async (req, res) => {
       softwareIds,
       durationMoreThen,
       durationLessThen,
-      sortProp,
+      sortProp: normalizedSortProp,
       orderAsc,
       similarityThreshold,
       userId: userId ? "provided" : "none",
     });
 
     // Determine default sortProp based on context
-    let effectiveSortProp = sortProp;
+    let effectiveSortProp = normalizedSortProp;
     if (!effectiveSortProp) {
       effectiveSortProp = normalizedSearchTerm
         ? "similarity_score"
