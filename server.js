@@ -230,10 +230,25 @@ async function fetchExternalBrandIds({
 // Initialize Express app
 const app = express();
 
+// CORS configuration
+const corsOptions = {
+  origin: [
+    "https://vidtao.com",
+    "https://www.vidtao.com",
+    "http://localhost:3000",
+    "http://localhost:3001",
+  ],
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
 // Middleware
 app.use(helmet()); // Security headers
 app.use(compression()); // Gzip compression
-app.use(cors()); // CORS support
 app.use(express.json({ limit: "10mb" })); // Parse JSON bodies
 
 // Rate limiting
