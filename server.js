@@ -1112,10 +1112,16 @@ app.post("/search/videos/enhanced", async (req, res) => {
       userId = null, // New parameter for user identification
     } = req.body;
 
+    // Convert empty string searchTerm to null
+    const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
+    // Convert categoryIds=0 to null
+    const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
+
     // Validate searchTerm if provided
     if (
-      searchTerm !== null &&
-      (typeof searchTerm !== "string" || searchTerm.trim() === "")
+      normalizedSearchTerm !== null &&
+      (typeof normalizedSearchTerm !== "string" ||
+        normalizedSearchTerm.trim() === "")
     ) {
       return res.status(400).json({
         error: "searchTerm must be a non-empty string if provided",
@@ -1174,13 +1180,12 @@ app.post("/search/videos/enhanced", async (req, res) => {
         code: "INVALID_similarityThreshold",
       });
     }
-    console.log("similarityThreshold", similarityThreshold);
 
     console.log(`📋 Request parameters:`, {
-      searchTerm: searchTerm ? `"${searchTerm}"` : null,
+      searchTerm: normalizedSearchTerm ? `"${normalizedSearchTerm}"` : null,
       limit,
       page,
-      categoryIds,
+      categoryIds: normalizedCategoryIds,
       languageId,
       videoStatus,
       durationMoreThen,
@@ -1194,7 +1199,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
     // Determine default sortProp based on context
     let effectiveSortProp = sortProp;
     if (!effectiveSortProp) {
-      effectiveSortProp = searchTerm ? "similarity_score" : "publishedAt";
+      effectiveSortProp = normalizedSearchTerm
+        ? "similarity_score"
+        : "publishedAt";
     }
 
     // Map frontend sortProp names to database field names
@@ -1217,7 +1224,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     console.log(
       `🔍 Enhanced video search: ${
-        searchTerm ? `"${searchTerm}"` : "ClickHouse-only"
+        normalizedSearchTerm ? `"${normalizedSearchTerm}"` : "ClickHouse-only"
       } (limit: ${limit}, page: ${page}, userId: ${userId || "none"})`
     );
 
@@ -1231,16 +1238,16 @@ app.post("/search/videos/enhanced", async (req, res) => {
     let parallelExecutionTime = 0;
 
     // PATH 1: Keyword provided - optimized parallel execution
-    if (searchTerm) {
+    if (normalizedSearchTerm) {
       console.log(
         `📡 Starting optimized parallel search operations at ${new Date().toISOString()}`
       );
       console.log(
-        `📡 Performing Qdrant and external semantic search for: "${searchTerm}"`
+        `📡 Performing Qdrant and external semantic search for: "${normalizedSearchTerm}"`
       );
 
       // Determine if external service should be used based on search term characteristics
-      const trimmedSearchTerm = searchTerm.trim();
+      const trimmedSearchTerm = normalizedSearchTerm.trim();
       const wordCount = trimmedSearchTerm.split(/\s+/).length;
       const totalLength = trimmedSearchTerm.length;
       const shouldSkipExternalService = wordCount > 2 && totalLength > 10;
@@ -1289,8 +1296,15 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
       // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
       const filters = { must: [] };
-      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        filters.must.push({ key: "category_id", match: { any: categoryIds } });
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        filters.must.push({
+          key: "category_id",
+          match: { any: normalizedCategoryIds },
+        });
       }
       if (languageId && typeof languageId === "string") {
         filters.must.push({ key: "language", match: { value: languageId } });
@@ -1472,7 +1486,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       }
     }
 
-    if (searchTerm && videoIds.length > 0) {
+    if (normalizedSearchTerm && videoIds.length > 0) {
       // Case 1: We have video IDs from Qdrant search - query specific videos
       const videoIdList = videoIds
         .map((id) => `'${id.replace(/'/g, "''")}'`)
@@ -1569,7 +1583,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           `✅ Swiped videos query completed, found ${swipedVideosData.length} records`
         );
       }
-    } else if (!searchTerm) {
+    } else if (!normalizedSearchTerm) {
       // Case 2: No keyword - direct ClickHouse query with filters
       console.log(
         `📊 Starting direct ClickHouse search with filters at ${new Date().toISOString()}`
@@ -1579,8 +1593,12 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const whereConditions = [];
 
       // Category ID filter
-      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        const categoryList = categoryIds.join(", ");
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        const categoryList = normalizedCategoryIds.join(", ");
         whereConditions.push(`category_id IN (${categoryList})`);
       }
 
@@ -1683,7 +1701,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       swipedVideosMap.set(item.yt_video_id, item);
     });
 
-    if (searchTerm) {
+    if (normalizedSearchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
@@ -1735,7 +1753,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
     }
 
     // Sort results based on the effective sort property
-    if (searchTerm) {
+    if (normalizedSearchTerm) {
       // When we have searchTerm, we need to sort the combined results
       if (effectiveSortProp === "similarity_score") {
         // Only sort by similarity when no sortProp was provided or explicitly requested
@@ -1829,20 +1847,22 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     const response = {
       success: true,
-      search_type: searchTerm ? "semantic_plus_clickhouse" : "clickhouse_only",
-      keyword: searchTerm || null,
+      search_type: normalizedSearchTerm
+        ? "semantic_plus_clickhouse"
+        : "clickhouse_only",
+      keyword: normalizedSearchTerm || null,
       total_results: enhancedResults.length,
       qdrant_matches: qdrantResults.length,
       external_matches: externalVideoIds.length,
       external_matches_used: videoIds.length - qdrantVideoIds.length,
-      external_service_used: searchTerm
+      external_service_used: normalizedSearchTerm
         ? externalVideoIds.length > 0 || externalTime > 0
         : false,
       clickhouse_matches: clickhouseData.length,
       swiped_matches: swipedVideosData.length,
       parameters: {
         search_filters: {
-          category_id: categoryIds,
+          category_id: normalizedCategoryIds,
           language: languageId,
           is_unlisted: videoStatus !== "all",
           duration_range: {
@@ -1850,17 +1870,17 @@ app.post("/search/videos/enhanced", async (req, res) => {
             max: durationLessThen,
           },
         },
-        search_term_analysis: searchTerm
+        search_term_analysis: normalizedSearchTerm
           ? {
-              word_count: searchTerm.trim().split(/\s+/).length,
-              total_length: searchTerm.trim().length,
+              word_count: normalizedSearchTerm.trim().split(/\s+/).length,
+              total_length: normalizedSearchTerm.trim().length,
               should_use_external: !(
-                searchTerm.trim().split(/\s+/).length <= 2 &&
-                searchTerm.trim().length <= 10
+                normalizedSearchTerm.trim().split(/\s+/).length <= 2 &&
+                normalizedSearchTerm.trim().length <= 10
               ),
             }
           : null,
-        similarityThreshold: searchTerm ? similarityThreshold : null,
+        similarityThreshold: normalizedSearchTerm ? similarityThreshold : null,
         clickhouse_ordering: {
           order_by: order_by,
           order_direction: order_direction,
@@ -1880,7 +1900,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       data: data,
     };
 
-    const searchTypeDesc = searchTerm
+    const searchTypeDesc = normalizedSearchTerm
       ? `semantic + ClickHouse`
       : `ClickHouse-only`;
     console.log(
@@ -2251,10 +2271,18 @@ app.post("/search/brands/enhanced", async (req, res) => {
       userId = null, // New parameter for user identification
     } = req.body;
 
+    // Convert empty string searchTerm to null
+    const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
+    // Convert categoryIds=0 to null
+    const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
+    // Convert countryId=0 to null
+    const normalizedCountryId = countryId === 0 ? null : countryId;
+
     // Validate searchTerm if provided
     if (
-      searchTerm !== null &&
-      (typeof searchTerm !== "string" || searchTerm.trim() === "")
+      normalizedSearchTerm !== null &&
+      (typeof normalizedSearchTerm !== "string" ||
+        normalizedSearchTerm.trim() === "")
     ) {
       return res.status(400).json({
         error: "searchTerm must be a non-empty string if provided",
@@ -2309,10 +2337,10 @@ app.post("/search/brands/enhanced", async (req, res) => {
     }
 
     console.log(`📋 Request parameters:`, {
-      searchTerm: searchTerm ? `"${searchTerm}"` : null,
+      searchTerm: normalizedSearchTerm ? `"${normalizedSearchTerm}"` : null,
       limit,
-      categoryIds,
-      countryId,
+      categoryIds: normalizedCategoryIds,
+      countryId: normalizedCountryId,
       softwareIds,
       durationMoreThen,
       durationLessThen,
@@ -2325,7 +2353,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
     // Determine default sortProp based on context
     let effectiveSortProp = sortProp;
     if (!effectiveSortProp) {
-      effectiveSortProp = searchTerm ? "similarity_score" : "totalSpend";
+      effectiveSortProp = normalizedSearchTerm
+        ? "similarity_score"
+        : "totalSpend";
     }
 
     // Map frontend sortProp names to database field names
@@ -2345,7 +2375,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
     console.log(
       `🔍 Enhanced brand search: ${
-        searchTerm ? `"${searchTerm}"` : "ClickHouse-only"
+        normalizedSearchTerm ? `"${normalizedSearchTerm}"` : "ClickHouse-only"
       } (limit: ${limit}, userId: ${userId || "none"})`
     );
 
@@ -2359,26 +2389,29 @@ app.post("/search/brands/enhanced", async (req, res) => {
     let brandIds = [];
 
     // PATH 1: Keyword provided - optimized parallel execution
-    if (searchTerm) {
+    if (normalizedSearchTerm) {
       console.log(
         `📡 Starting optimized parallel search operations at ${new Date().toISOString()}`
       );
       console.log(
-        `📡 Performing Qdrant and external semantic search for: "${searchTerm}"`
+        `📡 Performing Qdrant and external semantic search for: "${normalizedSearchTerm}"`
       );
 
       // Step 1: Start embedding creation and external service call in parallel
       const parallelStartTime = performance.now();
 
-      const embeddingPromise = createEmbedding(searchTerm.trim(), 384); // 384 dimensions for brands
+      const embeddingPromise = createEmbedding(
+        normalizedSearchTerm.trim(),
+        384
+      ); // 384 dimensions for brands
 
       console.log(
         `⚡ Starting embedding creation and external service call in parallel`
       );
       const externalPromise = fetchExternalBrandIds({
-        searchTerm,
-        categoryIds,
-        countryId,
+        searchTerm: normalizedSearchTerm,
+        categoryIds: normalizedCategoryIds,
+        countryId: normalizedCountryId,
         softwareIds,
         durationMoreThen,
         durationLessThen,
@@ -2387,11 +2420,21 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
       // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
       const filters = { must: [] };
-      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        filters.must.push({ key: "category_id", match: { any: categoryIds } });
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        filters.must.push({
+          key: "category_id",
+          match: { any: normalizedCategoryIds },
+        });
       }
-      if (countryId && typeof countryId === "number") {
-        filters.must.push({ key: "country_id", match: { value: countryId } });
+      if (normalizedCountryId && typeof normalizedCountryId === "number") {
+        filters.must.push({
+          key: "country_id",
+          match: { value: normalizedCountryId },
+        });
       }
       if (softwareIds && Array.isArray(softwareIds) && softwareIds.length > 0) {
         filters.must.push({ key: "software_id", match: { any: softwareIds } });
@@ -2575,7 +2618,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       }
     }
 
-    if (searchTerm && brandIds.length > 0) {
+    if (normalizedSearchTerm && brandIds.length > 0) {
       // Case 1: We have brand IDs from Qdrant search - query specific brands
       const brandIdList = brandIds
         .map((id) => `'${String(id).replace(/'/g, "''")}'`)
@@ -2735,7 +2778,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           `✅ Swiped brands query completed, found ${swipedBrandsData.length} records`
         );
       }
-    } else if (!searchTerm) {
+    } else if (!normalizedSearchTerm) {
       // Case 2: No keyword - direct ClickHouse query with filters
       console.log(
         `📊 Starting direct ClickHouse brand search with filters at ${new Date().toISOString()}`
@@ -2828,7 +2871,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       swipedBrandsMap.set(item.brand_id, item);
     });
 
-    if (searchTerm) {
+    if (normalizedSearchTerm && brandIds.length > 0) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
@@ -2907,7 +2950,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
     }
 
     // Sort results based on the effective sort property
-    if (searchTerm) {
+    if (normalizedSearchTerm && brandIds.length > 0) {
       // When we have searchTerm, we need to sort the combined results
       if (effectiveSortProp === "similarity_score") {
         // Only sort by similarity when no sortProp was provided or explicitly requested
@@ -2977,13 +3020,15 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
     const response = {
       success: true,
-      search_type: searchTerm ? "semantic_plus_clickhouse" : "clickhouse_only",
-      keyword: searchTerm || null,
+      search_type: normalizedSearchTerm
+        ? "semantic_plus_clickhouse"
+        : "clickhouse_only",
+      keyword: normalizedSearchTerm || null,
       total_results: enhancedResults.length,
       qdrant_matches: qdrantResults.length,
       external_matches: externalVideoIds.length,
       external_matches_used: brandIds.length - qdrantBrandIds.length,
-      external_service_used: searchTerm
+      external_service_used: normalizedSearchTerm
         ? externalVideoIds.length > 0 || externalTime > 0
         : false,
       clickhouse_matches: clickhouseData.length,
@@ -2998,7 +3043,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
             max: durationLessThen,
           },
         },
-        similarityThreshold: searchTerm ? similarityThreshold : null,
+        similarityThreshold: normalizedSearchTerm ? similarityThreshold : null,
         clickhouse_ordering: {
           order_by: order_by,
           order_direction: order_direction,
@@ -3018,7 +3063,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       data: data,
     };
 
-    const searchTypeDesc = searchTerm
+    const searchTypeDesc = normalizedSearchTerm
       ? `semantic + ClickHouse`
       : `ClickHouse-only`;
     console.log(
