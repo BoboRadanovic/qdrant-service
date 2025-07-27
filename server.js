@@ -2667,7 +2667,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bb.avg_duration,
             bb.updated_at
           FROM analytics.brand_basic bb
-          LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
+          LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
           WHERE bb.brand_id IN (${brandIdList})
         `;
       } else {
@@ -2699,8 +2699,8 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bb.avg_duration,
             bb.updated_at
           FROM analytics.brand_basic bb
-          LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
-          WHERE bb.brand_id IN (${brandIdList})
+          LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+          ${whereClause}
           ORDER BY ${order_by} ${order_direction.toUpperCase()}
           LIMIT ${parseInt(limit)}
         `;
@@ -2763,7 +2763,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           );
 
           // Show a few sample brand_ids from the table
-          const sampleQuery = `SELECT bb.brand_id, bb.name FROM analytics.brand_basic bb LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id LIMIT 5`;
+          const sampleQuery = `SELECT bb.brand_id, bb.name FROM analytics.brand_basic bb LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id LIMIT 5`;
           const sampleResult = await clickhouse.query({
             query: sampleQuery,
             format: "JSONEachRow",
@@ -2828,7 +2828,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.avg_duration,
           bb.updated_at
         FROM analytics.brand_basic bb
-        LEFT JOIN analytics.brand_summary bs ON toString(bb.brand_id) = bs.brand_id
+        LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
         ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
