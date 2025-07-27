@@ -1114,8 +1114,14 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     // Convert empty string searchTerm to null
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
-    // Convert categoryIds=0 to null
-    const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
+    // Convert categoryIds=0 or [0] to null
+    const normalizedCategoryIds =
+      categoryIds === 0 ||
+      (Array.isArray(categoryIds) &&
+        categoryIds.length === 1 &&
+        categoryIds[0] === 0)
+        ? null
+        : categoryIds;
     // Convert empty string sortProp to null
     const normalizedSortProp = sortProp === "" ? null : sortProp;
 
@@ -1281,6 +1287,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         console.log(
           `⚡ Starting embedding creation and external service call in parallel`
         );
+
         externalPromise = fetchExternalVideoIds({
           searchTerm,
           categoryIds,
@@ -1345,9 +1352,14 @@ app.post("/search/videos/enhanced", async (req, res) => {
         with_vector: false,
         params: { hnsw_ef: 32 },
       };
+
       if (filters.must.length > 0) {
         searchBody.filter = filters;
       }
+      console.log(
+        "searchBody filter:",
+        JSON.stringify(searchBody.filter, null, 2)
+      );
       const searchResponse = await axios.post(
         `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
         searchBody,
@@ -1710,30 +1722,48 @@ app.post("/search/videos/enhanced", async (req, res) => {
         clickhouseMap.set(item.yt_video_id, item);
       });
 
-      // Combine Qdrant results with ClickHouse data
-      qdrantResults.forEach((qdrantResult) => {
-        const videoId = qdrantResult.payload?.yt_video_id || qdrantResult.id;
-        const clickhouseInfo = clickhouseMap.get(videoId);
-        const swipedInfo = swipedVideosMap.get(videoId);
+      // If we have no Qdrant results but have external results, use those
+      if (qdrantResults.length === 0 && videoIds.length > 0) {
+        videoIds.forEach((videoId) => {
+          const clickhouseInfo = clickhouseMap.get(videoId);
+          const swipedInfo = swipedVideosMap.get(videoId);
 
-        const enhancedResult = {
-          ytVideoId: videoId,
-          similarity_score: qdrantResult.score,
-          // Qdrant payload data
-          qdrant_data: {
-            category_id: qdrantResult.payload?.category_id,
-            language: qdrantResult.payload?.language,
-            is_unlisted: qdrantResult.payload?.unlisted,
-            duration: qdrantResult.payload?.duration,
-          },
-          // ClickHouse summary data (if available)
-          summary_data: clickhouseInfo || null,
-          // Swiped videos data (if available)
-          swiped_data: swipedInfo || null,
-        };
+          const enhancedResult = {
+            ytVideoId: videoId,
+            similarity_score: null,
+            qdrant_data: null,
+            summary_data: clickhouseInfo || null,
+            swiped_data: swipedInfo || null,
+          };
 
-        enhancedResults.push(enhancedResult);
-      });
+          enhancedResults.push(enhancedResult);
+        });
+      } else {
+        // Combine Qdrant results with ClickHouse data
+        qdrantResults.forEach((qdrantResult) => {
+          const videoId = qdrantResult.payload?.yt_video_id || qdrantResult.id;
+          const clickhouseInfo = clickhouseMap.get(videoId);
+          const swipedInfo = swipedVideosMap.get(videoId);
+
+          const enhancedResult = {
+            ytVideoId: videoId,
+            similarity_score: qdrantResult.score,
+            // Qdrant payload data
+            qdrant_data: {
+              category_id: qdrantResult.payload?.category_id,
+              language: qdrantResult.payload?.language,
+              is_unlisted: qdrantResult.payload?.unlisted,
+              duration: qdrantResult.payload?.duration,
+            },
+            // ClickHouse summary data (if available)
+            summary_data: clickhouseInfo || null,
+            // Swiped videos data (if available)
+            swiped_data: swipedInfo || null,
+          };
+
+          enhancedResults.push(enhancedResult);
+        });
+      }
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
@@ -2260,23 +2290,29 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
   try {
     const {
-      searchTerm = null, // Now optional
+      searchTerm = null,
       limit = DEFAULT_LIMIT,
       categoryIds = null,
       countryId = null,
       softwareIds = null,
       durationMoreThen = null,
       durationLessThen = null,
-      sortProp = "totalSpend", // Default to totalSpend if not provided
-      orderAsc = false, // true = asc, false = desc
-      similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
-      userId = null, // New parameter for user identification
+      sortProp = "totalSpend",
+      orderAsc = false,
+      similarityThreshold = 0.4,
+      userId = null,
     } = req.body;
 
     // Convert empty string searchTerm to null
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
-    // Convert categoryIds=0 to null
-    const normalizedCategoryIds = categoryIds === 0 ? null : categoryIds;
+    // Convert categoryIds=0 or [0] to null
+    const normalizedCategoryIds =
+      categoryIds === 0 ||
+      (Array.isArray(categoryIds) &&
+        categoryIds.length === 1 &&
+        categoryIds[0] === 0)
+        ? null
+        : categoryIds;
     // Convert countryId=0 to null
     const normalizedCountryId = countryId === 0 ? null : countryId;
     // Convert empty string sortProp to totalSpend and 'total' to 'totalSpend'
@@ -2483,6 +2519,10 @@ app.post("/search/brands/enhanced", async (req, res) => {
       if (filters.must.length > 0) {
         searchBody.filter = filters;
       }
+      console.log(
+        "searchBody filter:",
+        JSON.stringify(searchBody.filter, null, 2)
+      );
       const searchResponse = await axios.post(
         `${qdrantUrl}/collections/${COLLECTION_NAME_BRANDS}/points/search`,
         searchBody,
@@ -2883,64 +2923,47 @@ app.post("/search/brands/enhanced", async (req, res) => {
       swipedBrandsMap.set(item.brand_id, item);
     });
 
-    if (normalizedSearchTerm && brandIds.length > 0) {
+    if (normalizedSearchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
         clickhouseMap.set(item.brand_id, item);
       });
 
-      // Combine Qdrant results with ClickHouse data
-      qdrantResults.forEach((qdrantResult) => {
-        const brandId = qdrantResult.payload?.brand_id || qdrantResult.id;
-        const clickhouseInfo = clickhouseMap.get(brandId);
-        const swipedInfo = swipedBrandsMap.get(brandId);
-
-        const enhancedResult = {
-          brandId: brandId,
-          similarity_score: qdrantResult.score,
-          // Qdrant payload data
-          qdrant_data: {
-            category_id: qdrantResult.payload?.category_id,
-            country_id: qdrantResult.payload?.country_id,
-            software_id: qdrantResult.payload?.software_id,
-            average_video_duration:
-              qdrantResult.payload?.average_video_duration,
-            name: qdrantResult.payload?.name,
-            thumbnail: qdrantResult.payload?.thumbnail,
-          },
-          // ClickHouse summary data (if available)
-          summary_data: clickhouseInfo || null,
-          // Swiped brands data (if available)
-          swiped_data: swipedInfo || null,
-        };
-
-        enhancedResults.push(enhancedResult);
-      });
-
-      // Also include brands from external service that have ClickHouse data but no Qdrant data
-      const processedBrandIds = new Set(
-        qdrantResults.map((r) => r.payload?.brand_id || r.id)
-      );
-
-      clickhouseData.forEach((clickhouseResult) => {
-        if (!processedBrandIds.has(clickhouseResult.brand_id)) {
-          const swipedInfo = swipedBrandsMap.get(clickhouseResult.brand_id);
+      // If we have no Qdrant results but have external results, use those
+      if (qdrantResults.length === 0 && brandIds.length > 0) {
+        brandIds.forEach((brandId) => {
+          const clickhouseInfo = clickhouseMap.get(brandId);
+          const swipedInfo = swipedBrandsMap.get(brandId);
 
           const enhancedResult = {
-            brandId: clickhouseResult.brand_id,
-            similarity_score: null, // No similarity score for external-only results
-            // Qdrant payload data (null since not in Qdrant)
+            brandId: brandId,
+            similarity_score: null,
             qdrant_data: null,
-            // ClickHouse summary data
-            summary_data: clickhouseResult,
-            // Swiped brands data (if available)
+            summary_data: clickhouseInfo || null,
             swiped_data: swipedInfo || null,
           };
 
           enhancedResults.push(enhancedResult);
-        }
-      });
+        });
+      } else {
+        // Combine Qdrant results with ClickHouse data
+        qdrantResults.forEach((qdrantResult) => {
+          const brandId = qdrantResult.payload?.brand_id || qdrantResult.id;
+          const clickhouseInfo = clickhouseMap.get(brandId);
+          const swipedInfo = swipedBrandsMap.get(brandId);
+
+          const enhancedResult = {
+            brandId: brandId,
+            similarity_score: qdrantResult.score,
+            qdrant_data: qdrantResult.payload || null,
+            summary_data: clickhouseInfo || null,
+            swiped_data: swipedInfo || null,
+          };
+
+          enhancedResults.push(enhancedResult);
+        });
+      }
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
