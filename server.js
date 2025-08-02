@@ -235,6 +235,7 @@ const corsOptions = {
   origin: [
     "https://vidtao.com",
     "https://www.vidtao.com",
+    "https://v2.vidtao.com",
     "http://localhost:3000",
     "http://localhost:3001",
   ],
