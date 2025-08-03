@@ -2728,6 +2728,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         `;
       } else {
         // For other sort fields, use ClickHouse ordering
+        const whereClause = `WHERE bb.brand_id IN (${brandIdList})`;
         query = `
           SELECT 
             bb.brand_id,
@@ -2802,31 +2803,74 @@ app.post("/search/brands/enhanced", async (req, res) => {
         )}ms, returned ${clickhouseData.length} records`
       );
 
+      // DEBUG: Log the actual data returned from ClickHouse
+      console.log(
+        `🔍 ClickHouse raw data sample (first 3 records):`,
+        clickhouseData.slice(0, 3).map((item) => ({
+          brand_id: item.brand_id,
+          name: item.name,
+          total_spend: item.total_spend,
+          has_data: !!item.name,
+        }))
+      );
+
       // Debug: If no results, check the brand_summary table
       if (clickhouseData.length === 0 && brandIds.length > 0) {
         console.log(
           `🔍 No results found in brand_summary table. Checking table status...`
         );
         try {
-          const countQuery = `SELECT count() as total FROM analytics.brand_summary LIMIT 1`;
-          const countResult = await clickhouse.query({
-            query: countQuery,
+          // Check brand_basic table first
+          const basicCountQuery = `SELECT count() as total FROM analytics.brand_basic LIMIT 1`;
+          const basicCountResult = await clickhouse.query({
+            query: basicCountQuery,
             format: "JSONEachRow",
           });
-          const countData = await countResult.json();
+          const basicCountData = await basicCountResult.json();
           console.log(
-            `🔍 brand_summary table has ${countData[0]?.total || 0} total rows`
+            `🔍 brand_basic table has ${
+              basicCountData[0]?.total || 0
+            } total rows`
           );
 
-          // Show a few sample brand_ids from the table
-          const sampleQuery = `SELECT bb.brand_id, bb.name FROM analytics.brand_basic bb LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id LIMIT 5`;
+          // Check brand_summary table
+          const summaryCountQuery = `SELECT count() as total FROM analytics.brand_summary LIMIT 1`;
+          const summaryCountResult = await clickhouse.query({
+            query: summaryCountQuery,
+            format: "JSONEachRow",
+          });
+          const summaryCountData = await summaryCountResult.json();
+          console.log(
+            `🔍 brand_summary table has ${
+              summaryCountData[0]?.total || 0
+            } total rows`
+          );
+
+          // Check if our specific brand IDs exist in brand_basic table
+          const brandIdList = brandIds
+            .slice(0, 10)
+            .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+            .join(", ");
+          const checkBrandsQuery = `SELECT brand_id, name FROM analytics.brand_basic WHERE brand_id IN (${brandIdList}) LIMIT 10`;
+          const checkBrandsResult = await clickhouse.query({
+            query: checkBrandsQuery,
+            format: "JSONEachRow",
+          });
+          const checkBrandsData = await checkBrandsResult.json();
+          console.log(
+            `🔍 Found ${checkBrandsData.length} of our brand IDs in brand_basic table:`,
+            checkBrandsData.map((r) => ({ brand_id: r.brand_id, name: r.name }))
+          );
+
+          // Show a few sample brand_ids from brand_basic table
+          const sampleQuery = `SELECT brand_id, name FROM analytics.brand_basic LIMIT 5`;
           const sampleResult = await clickhouse.query({
             query: sampleQuery,
             format: "JSONEachRow",
           });
           const sampleData = await sampleResult.json();
           console.log(
-            `🔍 Sample brand_ids in table:`,
+            `🔍 Sample brand_ids in brand_basic table:`,
             sampleData.map((r) => ({ brand_id: r.brand_id, name: r.name }))
           );
 
@@ -2834,10 +2878,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           console.log(`🔍 Query we executed:`, query);
           console.log(`🔍 Brand IDs we searched for:`, brandIds.slice(0, 10));
         } catch (error) {
-          console.error(
-            `❌ Error checking brand_summary table:`,
-            error.message
-          );
+          console.error(`❌ Error checking brand tables:`, error.message);
         }
       }
 
@@ -2936,38 +2977,118 @@ app.post("/search/brands/enhanced", async (req, res) => {
     // Create a map of swiped brands for quick lookup
     const swipedBrandsMap = new Map();
     swipedBrandsData.forEach((item) => {
-      swipedBrandsMap.set(item.brand_id, item);
+      swipedBrandsMap.set(String(item.brand_id), item);
     });
 
     if (normalizedSearchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
-        clickhouseMap.set(item.brand_id, item);
+        // Convert brand_id to string to ensure consistent key matching
+        clickhouseMap.set(String(item.brand_id), item);
+      });
+
+      console.log(`🔍 ClickHouse data types check:`, {
+        sample_brand_id: clickhouseData[0]?.brand_id,
+        sample_brand_id_type: typeof clickhouseData[0]?.brand_id,
+        brand_ids_from_external: brandIds.slice(0, 3),
+        brand_ids_from_external_type: typeof brandIds[0],
       });
 
       // If we have no Qdrant results but have external results, use those
       if (qdrantResults.length === 0 && brandIds.length > 0) {
-        brandIds.forEach((brandId) => {
-          const clickhouseInfo = clickhouseMap.get(brandId);
-          const swipedInfo = swipedBrandsMap.get(brandId);
+        // If ClickHouse returned no data, try to fetch basic brand info
+        if (clickhouseData.length === 0) {
+          console.log(
+            `🔍 No ClickHouse data found, attempting to fetch basic brand info...`
+          );
+          try {
+            const brandIdList = brandIds
+              .slice(0, 25)
+              .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+              .join(", ");
+            const basicBrandQuery = `SELECT brand_id, name, description, category_id, country_id, avg_duration, updated_at FROM analytics.brand_basic WHERE brand_id IN (${brandIdList})`;
+            const basicBrandResult = await clickhouse.query({
+              query: basicBrandQuery,
+              format: "JSONEachRow",
+            });
+            const basicBrandData = await basicBrandResult.json();
+            console.log(
+              `🔍 Found ${basicBrandData.length} brands in brand_basic table`
+            );
 
-          const enhancedResult = {
-            brandId: brandId,
-            similarity_score: null,
-            qdrant_data: null,
-            summary_data: clickhouseInfo || null,
-            swiped_data: swipedInfo || null,
-          };
+            // Create a map of basic brand data
+            const basicBrandMap = new Map();
+            basicBrandData.forEach((item) => {
+              basicBrandMap.set(item.brand_id, item);
+            });
 
-          enhancedResults.push(enhancedResult);
-        });
+            brandIds.forEach((brandId) => {
+              const basicBrandInfo = basicBrandMap.get(String(brandId));
+              const swipedInfo = swipedBrandsMap.get(String(brandId));
+
+              const enhancedResult = {
+                brandId: brandId,
+                similarity_score: null,
+                qdrant_data: null,
+                summary_data: basicBrandInfo || null,
+                swiped_data: swipedInfo || null,
+              };
+
+              enhancedResults.push(enhancedResult);
+            });
+          } catch (error) {
+            console.error(`❌ Error fetching basic brand info:`, error.message);
+            // Fallback to just brand IDs
+            brandIds.forEach((brandId) => {
+              const swipedInfo = swipedBrandsMap.get(String(brandId));
+
+              const enhancedResult = {
+                brandId: brandId,
+                similarity_score: null,
+                qdrant_data: null,
+                summary_data: null,
+                swiped_data: swipedInfo || null,
+              };
+
+              enhancedResults.push(enhancedResult);
+            });
+          }
+        } else {
+          // Use ClickHouse data as before
+          console.log(
+            `🔍 Using ClickHouse data for ${brandIds.length} brand IDs`
+          );
+          console.log(`🔍 ClickHouse map has ${clickhouseMap.size} entries`);
+
+          brandIds.forEach((brandId) => {
+            const clickhouseInfo = clickhouseMap.get(String(brandId));
+            const swipedInfo = swipedBrandsMap.get(String(brandId));
+
+            console.log(`🔍 Processing brand ${brandId}:`, {
+              has_clickhouse_data: !!clickhouseInfo,
+              has_swiped_data: !!swipedInfo,
+              clickhouse_name: clickhouseInfo?.name || "null",
+              brand_id_lookup_key: String(brandId),
+            });
+
+            const enhancedResult = {
+              brandId: brandId,
+              similarity_score: null,
+              qdrant_data: null,
+              summary_data: clickhouseInfo || null,
+              swiped_data: swipedInfo || null,
+            };
+
+            enhancedResults.push(enhancedResult);
+          });
+        }
       } else {
         // Combine Qdrant results with ClickHouse data
         qdrantResults.forEach((qdrantResult) => {
           const brandId = qdrantResult.payload?.brand_id || qdrantResult.id;
-          const clickhouseInfo = clickhouseMap.get(brandId);
-          const swipedInfo = swipedBrandsMap.get(brandId);
+          const clickhouseInfo = clickhouseMap.get(String(brandId));
+          const swipedInfo = swipedBrandsMap.get(String(brandId));
 
           const enhancedResult = {
             brandId: brandId,
@@ -2983,7 +3104,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
-        const swipedInfo = swipedBrandsMap.get(clickhouseResult.brand_id);
+        const swipedInfo = swipedBrandsMap.get(
+          String(clickhouseResult.brand_id)
+        );
 
         const enhancedResult = {
           brandId: clickhouseResult.brand_id,
@@ -3041,11 +3164,15 @@ app.post("/search/brands/enhanced", async (req, res) => {
     }
 
     // Format response to match frontend expectations (based on original fullSearch structure)
+    console.log(
+      `🔍 Final response formatting: ${enhancedResults.length} enhanced results`
+    );
+
     const data = {
-      results: enhancedResults.map((r) => {
+      results: enhancedResults.map((r, index) => {
         const isSwiped = r.swiped_data ? true : false;
 
-        return {
+        const result = {
           brandId: r.brandId,
           isSwiped: isSwiped, // Set based on swiped_brands table
           name: r.summary_data?.name || r.qdrant_data?.name || null,
@@ -3066,6 +3193,19 @@ app.post("/search/brands/enhanced", async (req, res) => {
           summary_data: r.summary_data,
           swiped_data: r.swiped_data, // Include swiped data for debugging
         };
+
+        // Log first 3 results to see what's being formatted
+        if (index < 3) {
+          console.log(`🔍 Final result ${index + 1}:`, {
+            brandId: result.brandId,
+            name: result.name,
+            totalSpend: result.totalSpend,
+            has_summary_data: !!result.summary_data,
+            has_qdrant_data: !!result.qdrant_data,
+          });
+        }
+
+        return result;
       }),
     };
 
