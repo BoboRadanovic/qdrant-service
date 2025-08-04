@@ -140,11 +140,21 @@ async function fetchExternalVideoIds({
   durationMoreThen,
   durationLessThen,
   limit,
+  token,
 }) {
   try {
+    // Convert categoryIds=[0] to empty array
+    const normalizedCategoryIds =
+      categoryIds === 0 ||
+      (Array.isArray(categoryIds) &&
+        categoryIds.length === 1 &&
+        categoryIds[0] === 0)
+        ? []
+        : categoryIds;
+
     const payload = {
       searchTerm: searchTerm || null,
-      categoryIds: categoryIds || null,
+      categoryIds: normalizedCategoryIds,
       language: languageId || null,
       showVideos:
         videoStatus !== undefined && videoStatus !== null ? videoStatus : null,
@@ -156,10 +166,19 @@ async function fetchExternalVideoIds({
     Object.keys(payload).forEach(
       (key) => payload[key] === null && delete payload[key]
     );
+
+    const headers = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    console.log(payload);
     const response = await axios.post(
-      "http://apiv1.vidtao.com/api/videosPublic/search-ids",
+      "https://apiv1.vidtao.com/api/videosPublic/search-ids",
       payload,
-      { timeout: 20000 }
+      {
+        timeout: 20000,
+        headers,
+      }
     );
     if (
       response.data &&
@@ -183,6 +202,7 @@ async function fetchExternalBrandIds({
   durationMoreThen,
   durationLessThen,
   limit,
+  token,
 }) {
   try {
     const payload = {
@@ -199,10 +219,18 @@ async function fetchExternalBrandIds({
       (key) => payload[key] === null && delete payload[key]
     );
 
+    const headers = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const response = await axios.post(
-      "http://apiv1.vidtao.com/api/videosPublic/search-brands-ids",
+      "https://apiv1.vidtao.com/api/videosPublic/search-brands-ids",
       payload,
-      { timeout: 20000 }
+      {
+        timeout: 20000,
+        headers,
+      }
     );
 
     if (
@@ -260,7 +288,72 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Health check endpoint
+/**
+ * JWT token authentication middleware
+ *
+ * This middleware:
+ * 1. Extracts the JWT token from the Authorization header (Bearer TOKEN format)
+ * 2. Decodes the JWT token payload (without verification for simplicity)
+ * 3. Extracts user_id from the token payload (supports user_id, userId, or sub fields)
+ * 4. Sets req.user_id for use in route handlers
+ * 5. Rejects requests without valid tokens
+ *
+ * Usage:
+ * - Send requests with Authorization: Bearer <your-jwt-token> header
+ * - Access user_id in routes via req.user_id
+ *
+ * Note: This is a simplified version that doesn't verify token signatures
+ * For production use, consider implementing proper JWT verification
+ */
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({
+      error: "Access token required",
+      code: "MISSING_TOKEN",
+      message: "Authorization header with Bearer token is required",
+    });
+  }
+
+  try {
+    // Simple JWT decode (without verification)
+    const base64Url = token.split(".")[1];
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map(function (c) {
+          return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+        })
+        .join("")
+    );
+
+    const decoded = JSON.parse(jsonPayload);
+
+    // Extract user_id from the token payload
+    req.user_id = decoded.user_id || decoded.userId || decoded.sub || null;
+
+    if (!req.user_id) {
+      return res.status(401).json({
+        error: "Invalid token - user_id not found",
+        code: "INVALID_TOKEN",
+        message: "Token does not contain valid user_id",
+      });
+    }
+
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      error: "Invalid token format",
+      code: "INVALID_TOKEN",
+      message: "Token could not be parsed",
+    });
+  }
+};
+
+// Health check endpoint (no authentication required)
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
@@ -269,7 +362,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Service alive check endpoint
+// Service alive check endpoint (no authentication required)
 app.get("/check-alive", async (req, res) => {
   try {
     const result = await checkServiceHealth();
@@ -284,6 +377,19 @@ app.get("/check-alive", async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   }
+});
+
+// Apply authentication middleware to protected routes
+app.use(authenticateToken);
+
+// Test authentication endpoint
+app.get("/auth/test", (req, res) => {
+  res.status(200).json({
+    message: "Authentication middleware test",
+    user_id: req.user_id,
+    has_token: !!req.headers["authorization"],
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Main search endpoint
@@ -1125,8 +1231,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
       sortProp = null, // Will default based on context
       orderAsc = false, // true = asc, false = desc
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
-      userId = null, // New parameter for user identification
     } = req.body;
+
+    // Get user_id from authentication middleware
+    const userId = req.user_id;
 
     // Convert empty string searchTerm to null
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
@@ -1158,17 +1266,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
       return res.status(400).json({
         error: "Limit must be between 1 and 1000",
         code: "INVALID_LIMIT",
-      });
-    }
-
-    // Validate userId if provided
-    if (
-      userId !== null &&
-      (typeof userId !== "string" || userId.trim() === "")
-    ) {
-      return res.status(400).json({
-        error: "userId must be a non-empty string if provided",
-        code: "INVALID_USER_ID",
       });
     }
 
@@ -1304,6 +1401,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
           `⚡ Starting embedding creation and external service call in parallel`
         );
 
+        // Extract token from request headers
+        const authHeader = req.headers["authorization"];
+        const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+
         externalPromise = fetchExternalVideoIds({
           searchTerm,
           categoryIds,
@@ -1312,6 +1413,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           durationMoreThen,
           durationLessThen,
           limit,
+          token,
         });
       } else {
         console.log(
@@ -1372,10 +1474,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
       if (filters.must.length > 0) {
         searchBody.filter = filters;
       }
-      console.log(
-        "searchBody filter:",
-        JSON.stringify(searchBody.filter, null, 2)
-      );
+      // console.log(
+      //   "searchBody filter:",
+      //   JSON.stringify(searchBody.filter, null, 2)
+      // );
       const searchResponse = await axios.post(
         `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
         searchBody,
@@ -1483,6 +1585,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     // Function to fetch swiped videos data
     async function fetchSwipedVideos(videoIds, userId) {
+      //console.log("fetchSwipedVideos", videoIds, userId);
       if (!userId || !videoIds || videoIds.length === 0) {
         return [];
       }
@@ -1566,7 +1669,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
           FROM analytics.yt_video_summary 
           WHERE yt_video_id IN (${videoIdList})
           ORDER BY ${order_by} ${order_direction.toUpperCase()}
-          LIMIT ${parseInt(limit)}
         `;
       }
 
@@ -2316,8 +2418,10 @@ app.post("/search/brands/enhanced", async (req, res) => {
       sortProp = "totalSpend",
       orderAsc = false,
       similarityThreshold = 0.4,
-      userId = null,
     } = req.body;
+
+    // Get user_id from authentication middleware
+    const userId = req.user_id;
 
     // Convert empty string searchTerm to null
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
@@ -2358,17 +2462,6 @@ app.post("/search/brands/enhanced", async (req, res) => {
       return res.status(400).json({
         error: "Limit must be between 1 and 1000",
         code: "INVALID_LIMIT",
-      });
-    }
-
-    // Validate userId if provided
-    if (
-      userId !== null &&
-      (typeof userId !== "string" || userId.trim() === "")
-    ) {
-      return res.status(400).json({
-        error: "userId must be a non-empty string if provided",
-        code: "INVALID_USER_ID",
       });
     }
 
@@ -2472,6 +2565,10 @@ app.post("/search/brands/enhanced", async (req, res) => {
       console.log(
         `⚡ Starting embedding creation and external service call in parallel`
       );
+      // Extract token from request headers
+      const authHeader = req.headers["authorization"];
+      const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+
       const externalPromise = fetchExternalBrandIds({
         searchTerm: normalizedSearchTerm,
         categoryIds: normalizedCategoryIds,
@@ -2480,6 +2577,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         durationMoreThen,
         durationLessThen,
         limit,
+        token,
       });
 
       // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
