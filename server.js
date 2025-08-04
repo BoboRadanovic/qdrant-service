@@ -157,7 +157,7 @@ async function fetchExternalVideoIds({
       (key) => payload[key] === null && delete payload[key]
     );
     const response = await axios.post(
-      "http://88.99.139.239:3000/api/videosPublic/search-ids",
+      "http://apiv1.vidtao.com/api/videosPublic/search-ids",
       payload,
       { timeout: 20000 }
     );
@@ -200,7 +200,7 @@ async function fetchExternalBrandIds({
     );
 
     const response = await axios.post(
-      "http://88.99.139.239:3000/api/videosPublic/search-brands-ids",
+      "http://apiv1.vidtao.com/api/videosPublic/search-brands-ids",
       payload,
       { timeout: 20000 }
     );
