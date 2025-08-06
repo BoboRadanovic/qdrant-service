@@ -2898,7 +2898,34 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bb.avg_duration,
             bb.updated_at
           FROM analytics.brand_basic bb
-          LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+          LEFT JOIN (
+            SELECT 
+              brand_id,
+              views_7,
+              views_14,
+              views_21,
+              views_30,
+              views_90,
+              views_365,
+              views_720,
+              total_views,
+              spend_7,
+              spend_14,
+              spend_21,
+              spend_30,
+              spend_90,
+              spend_365,
+              spend_720,
+              total_spend,
+              date as summary_date
+            FROM (
+              SELECT 
+                *,
+                ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+              FROM analytics.brand_summary
+            ) ranked
+            WHERE rn = 1
+          ) bs ON bb.brand_id = bs.brand_id
           WHERE bb.brand_id IN (${brandIdList})
         `;
       } else {
@@ -2932,7 +2959,34 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bb.avg_duration,
             bb.updated_at
           FROM analytics.brand_basic bb
-          LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+          LEFT JOIN (
+            SELECT 
+              brand_id,
+              views_7,
+              views_14,
+              views_21,
+              views_30,
+              views_90,
+              views_365,
+              views_720,
+              total_views,
+              spend_7,
+              spend_14,
+              spend_21,
+              spend_30,
+              spend_90,
+              spend_365,
+              spend_720,
+              total_spend,
+              date as summary_date
+            FROM (
+              SELECT 
+                *,
+                ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+              FROM analytics.brand_summary
+            ) ranked
+            WHERE rn = 1
+          ) bs ON bb.brand_id = bs.brand_id
           ${whereClause}
           ORDER BY ${order_by} ${order_direction.toUpperCase()}
           LIMIT ${parseInt(limit)}
