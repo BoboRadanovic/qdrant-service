@@ -2892,6 +2892,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bs.date as summary_date,
             bb.name,
             bb.description,
+            bb.thumbnail,
             bb.category_id,
             bb.country_id,
             bb.avg_duration,
@@ -2925,6 +2926,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
             bs.date as summary_date,
             bb.name,
             bb.description,
+            bb.thumbnail,
             bb.category_id,
             bb.country_id,
             bb.avg_duration,
@@ -3097,6 +3099,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.category_id,
           bb.country_id,
           bb.avg_duration,
+          bb.thumbnail,
           bb.updated_at
         FROM analytics.brand_basic bb
         LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
@@ -3181,7 +3184,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
               .slice(0, limit)
               .map((id) => `'${String(id).replace(/'/g, "''")}'`)
               .join(", ");
-            const basicBrandQuery = `SELECT brand_id, name, description, category_id, country_id, avg_duration, updated_at FROM analytics.brand_basic WHERE brand_id IN (${brandIdList})`;
+            const basicBrandQuery = `SELECT brand_id, name, description, category_id, country_id, avg_duration, updated_at, thumbnail FROM analytics.brand_basic WHERE brand_id IN (${brandIdList})`;
             const basicBrandResult = await clickhouse.query({
               query: basicBrandQuery,
               format: "JSONEachRow",
@@ -3351,7 +3354,8 @@ app.post("/search/brands/enhanced", async (req, res) => {
           isSwiped: isSwiped, // Set based on swiped_brands table
           name: r.summary_data?.name || r.qdrant_data?.name || null,
           description: r.summary_data?.description || null,
-          thumbnail: r.qdrant_data?.thumbnail || null,
+          thumbnail:
+            r.summary_data?.thumbnail || r.qdrant_data?.thumbnail || null,
           countryId:
             r.summary_data?.country_id || r.qdrant_data?.country_id || null,
           categoryId:
