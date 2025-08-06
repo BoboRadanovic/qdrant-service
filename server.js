@@ -141,6 +141,8 @@ async function fetchExternalVideoIds({
   durationLessThen,
   limit,
   token,
+  DateFrom,
+  DateTo,
 }) {
   try {
     // Convert categoryIds=[0] to empty array
@@ -161,6 +163,8 @@ async function fetchExternalVideoIds({
       durationMoreThen: durationMoreThen || null,
       durationLessThen: durationLessThen || null,
       limit: limit || 200,
+      DateFrom: DateFrom || null,
+      DateTo: DateTo || null,
     };
     // Remove undefined/null keys
     Object.keys(payload).forEach(
@@ -1222,7 +1226,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
     const {
       searchTerm = null, // Now optional
       limit = DEFAULT_LIMIT,
-      page = 1,
       categoryIds = null,
       languageId = null,
       videoStatus = "all", // 'all', 'public', 'unlisted'
@@ -1231,6 +1234,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
       sortProp = null, // Will default based on context
       orderAsc = false, // true = asc, false = desc
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
+      dateFrom = null, // New parameter for date range filtering
+      dateTo = null, // New parameter for date range filtering
     } = req.body;
 
     // Get user_id from authentication middleware
@@ -1248,6 +1253,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
         : categoryIds;
     // Convert empty string sortProp to null
     const normalizedSortProp = sortProp === "" ? null : sortProp;
+
+    // Convert sortProp "date" to "publishedAt"
+    const finalSortProp =
+      normalizedSortProp === "date" ? "publishedAt" : normalizedSortProp;
 
     // Validate searchTerm if provided
     if (
@@ -1268,7 +1277,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         code: "INVALID_LIMIT",
       });
     }
-
+    console.log("finalSortProp", finalSortProp);
     // Validate sortProp field (if provided)
     const validOrderFields = [
       "publishedAt",
@@ -1277,7 +1286,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       "total",
       "similarity_score",
     ];
-    if (normalizedSortProp && !validOrderFields.includes(normalizedSortProp)) {
+    if (finalSortProp && !validOrderFields.includes(finalSortProp)) {
       return res.status(400).json({
         error: `sortProp must be one of: ${validOrderFields.join(
           ", "
@@ -1305,20 +1314,21 @@ app.post("/search/videos/enhanced", async (req, res) => {
     console.log(`📋 Request parameters:`, {
       searchTerm: normalizedSearchTerm ? `"${normalizedSearchTerm}"` : null,
       limit,
-      page,
       categoryIds: normalizedCategoryIds,
       languageId,
       videoStatus,
       durationMoreThen,
       durationLessThen,
-      sortProp: normalizedSortProp,
+      sortProp: finalSortProp,
       orderAsc,
       similarityThreshold,
       userId: userId ? "provided" : "none",
+      dateFrom,
+      dateTo,
     });
 
     // Determine default sortProp based on context
-    let effectiveSortProp = normalizedSortProp;
+    let effectiveSortProp = finalSortProp;
     if (!effectiveSortProp) {
       effectiveSortProp = normalizedSearchTerm
         ? "similarity_score"
@@ -1346,7 +1356,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
     console.log(
       `🔍 Enhanced video search: ${
         normalizedSearchTerm ? `"${normalizedSearchTerm}"` : "ClickHouse-only"
-      } (limit: ${limit}, page: ${page}, userId: ${userId || "none"})`
+      } (limit: ${limit},  userId: ${userId || "none"})`
     );
 
     let qdrantResults = [];
@@ -1414,6 +1424,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
           durationLessThen,
           limit,
           token,
+          dateFrom,
+          dateTo,
         });
       } else {
         console.log(
@@ -1454,6 +1466,28 @@ app.post("/search/videos/enhanced", async (req, res) => {
         filters.must.push(durationFilter);
       }
 
+      // Date range filter for Qdrant
+      if (dateFrom !== null || dateTo !== null) {
+        const dateFilter = { key: "published_at", range: {} };
+        if (dateFrom !== null && dateFrom !== undefined) {
+          // Convert date to ISO format for Qdrant
+          const fromDate = new Date(dateFrom);
+          if (!isNaN(fromDate.getTime())) {
+            dateFilter.range.gte = fromDate.toISOString();
+          }
+        }
+        if (dateTo !== null && dateTo !== undefined) {
+          // Convert date to ISO format for Qdrant
+          const toDate = new Date(dateTo);
+          if (!isNaN(toDate.getTime())) {
+            dateFilter.range.lte = toDate.toISOString();
+          }
+        }
+        if (dateFilter.range.gte || dateFilter.range.lte) {
+          filters.must.push(dateFilter);
+        }
+      }
+
       // Step 3: Wait for embedding to be ready, then start Qdrant search immediately
       console.log(`🔍 Waiting for embedding to be ready...`);
       const embedding = await embeddingPromise;
@@ -1474,16 +1508,25 @@ app.post("/search/videos/enhanced", async (req, res) => {
       if (filters.must.length > 0) {
         searchBody.filter = filters;
       }
-      // console.log(
-      //   "searchBody filter:",
-      //   JSON.stringify(searchBody.filter, null, 2)
-      // );
-      const searchResponse = await axios.post(
-        `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
-        searchBody,
-        { headers: buildHeaders(), timeout: 30000 }
+      console.log(
+        "searchBody filter:",
+        JSON.stringify(searchBody.filter, null, 2)
       );
-      qdrantResults = searchResponse.data.result;
+      try {
+        const searchResponse = await axios.post(
+          `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
+          searchBody,
+          { headers: buildHeaders(), timeout: 30000 }
+        );
+        qdrantResults = searchResponse.data.result;
+      } catch (error) {
+        console.error(
+          "❌ Qdrant search error:",
+          error.response?.data || error.message
+        );
+        console.error("❌ Search body:", JSON.stringify(searchBody, null, 2));
+        throw error;
+      }
       qdrantTime = performance.now() - qdrantStartTime;
       console.log(
         `✅ Qdrant search completed in ${qdrantTime.toFixed(2)}ms, returned ${
@@ -1758,6 +1801,14 @@ app.post("/search/videos/enhanced", async (req, res) => {
         whereConditions.push(`duration <= ${durationLessThen}`);
       }
 
+      // Date range filter
+      if (dateFrom !== null && dateFrom !== undefined) {
+        whereConditions.push(`published_at >= '${dateFrom}'`);
+      }
+      if (dateTo !== null && dateTo !== undefined) {
+        whereConditions.push(`published_at <= '${dateTo}'`);
+      }
+
       const whereClause =
         whereConditions.length > 0
           ? `WHERE ${whereConditions.join(" AND ")}`
@@ -1826,6 +1877,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
     // Step 3: Format results based on search type
     const enhancedResults = [];
+    let filteredOutCount = 0;
 
     // Create a map of swiped videos for quick lookup
     const swipedVideosMap = new Map();
@@ -1846,15 +1898,20 @@ app.post("/search/videos/enhanced", async (req, res) => {
           const clickhouseInfo = clickhouseMap.get(videoId);
           const swipedInfo = swipedVideosMap.get(videoId);
 
-          const enhancedResult = {
-            ytVideoId: videoId,
-            similarity_score: null,
-            qdrant_data: null,
-            summary_data: clickhouseInfo || null,
-            swiped_data: swipedInfo || null,
-          };
+          // Only include videos that have ClickHouse data
+          if (clickhouseInfo) {
+            const enhancedResult = {
+              ytVideoId: videoId,
+              similarity_score: null,
+              qdrant_data: null,
+              summary_data: clickhouseInfo,
+              swiped_data: swipedInfo || null,
+            };
 
-          enhancedResults.push(enhancedResult);
+            enhancedResults.push(enhancedResult);
+          } else {
+            filteredOutCount++;
+          }
         });
       } else {
         // Combine Qdrant results with ClickHouse data
@@ -1863,23 +1920,28 @@ app.post("/search/videos/enhanced", async (req, res) => {
           const clickhouseInfo = clickhouseMap.get(videoId);
           const swipedInfo = swipedVideosMap.get(videoId);
 
-          const enhancedResult = {
-            ytVideoId: videoId,
-            similarity_score: qdrantResult.score,
-            // Qdrant payload data
-            qdrant_data: {
-              category_id: qdrantResult.payload?.category_id,
-              language: qdrantResult.payload?.language,
-              is_unlisted: qdrantResult.payload?.unlisted,
-              duration: qdrantResult.payload?.duration,
-            },
-            // ClickHouse summary data (if available)
-            summary_data: clickhouseInfo || null,
-            // Swiped videos data (if available)
-            swiped_data: swipedInfo || null,
-          };
+          // Only include videos that have ClickHouse data
+          if (clickhouseInfo) {
+            const enhancedResult = {
+              ytVideoId: videoId,
+              similarity_score: qdrantResult.score,
+              // Qdrant payload data
+              qdrant_data: {
+                category_id: qdrantResult.payload?.category_id,
+                language: qdrantResult.payload?.language,
+                is_unlisted: qdrantResult.payload?.unlisted,
+                duration: qdrantResult.payload?.duration,
+              },
+              // ClickHouse summary data
+              summary_data: clickhouseInfo,
+              // Swiped videos data (if available)
+              swiped_data: swipedInfo || null,
+            };
 
-          enhancedResults.push(enhancedResult);
+            enhancedResults.push(enhancedResult);
+          } else {
+            filteredOutCount++;
+          }
         });
       }
     } else {
@@ -1958,9 +2020,15 @@ app.post("/search/videos/enhanced", async (req, res) => {
       );
     }
 
+    // Log filtering results
+    if (filteredOutCount > 0) {
+      console.log(
+        `🔍 Filtered out ${filteredOutCount} videos without ClickHouse data`
+      );
+    }
+
     // Format response to match frontend expectations
     const data = {
-      page: page,
       hasMore: clickhouseData.length === limit,
       results: enhancedResults.map((r) => {
         const isSwiped = r.swiped_data ? true : false;
@@ -1972,7 +2040,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
           duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
           description: null, // Not available in current data structure
           thumbnail: r.summary_data?.frame || null,
-          publishedAt: r.summary_data?.published_at || null,
+          publishedAt: r.summary_data?.published_at
+            ? new Date(r.summary_data.published_at)
+            : null,
           totalSpend: r.summary_data?.total || null,
           is_unlisted:
             r.summary_data?.listed === false ||
@@ -2019,6 +2089,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
             min: durationMoreThen,
             max: durationLessThen,
           },
+          date_range: {
+            from: dateFrom,
+            to: dateTo,
+          },
         },
         search_term_analysis: normalizedSearchTerm
           ? {
@@ -2037,6 +2111,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         },
         limit: parseInt(limit),
         userId: userId,
+        dateFrom,
+        dateTo,
       },
       timing: {
         total_ms: Math.round(totalTime),
@@ -3339,6 +3415,8 @@ app.post("/search/brands/enhanced", async (req, res) => {
         },
         limit: parseInt(limit),
         userId: userId,
+        dateFrom,
+        dateTo,
       },
       timing: {
         total_ms: Math.round(totalTime),
