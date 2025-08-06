@@ -2934,7 +2934,6 @@ app.post("/search/brands/enhanced", async (req, res) => {
           LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
           ${whereClause}
           ORDER BY ${order_by} ${order_direction.toUpperCase()}
-          LIMIT ${parseInt(limit)}
         `;
       }
 
@@ -2968,6 +2967,27 @@ app.post("/search/brands/enhanced", async (req, res) => {
         });
 
         clickhouseData = await resultSet.json();
+      }
+
+      // Deduplicate brands: keep only the latest record per brand_id based on summary_date
+      if (clickhouseData.length > 0) {
+        const brandMap = new Map();
+        clickhouseData.forEach((record) => {
+          const brandId = record.brand_id;
+          const currentDate = new Date(record.summary_date || "1970-01-01");
+
+          if (
+            !brandMap.has(brandId) ||
+            new Date(brandMap.get(brandId).summary_date || "1970-01-01") <
+              currentDate
+          ) {
+            brandMap.set(brandId, record);
+          }
+        });
+        clickhouseData = Array.from(brandMap.values());
+        console.log(
+          `🔍 After deduplication: ${clickhouseData.length} unique brands`
+        );
       }
 
       clickhouseTime = performance.now() - clickhouseStartTime;
@@ -3101,7 +3121,34 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.thumbnail,
           bb.updated_at
         FROM analytics.brand_basic bb
-        LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+        LEFT JOIN (
+          SELECT 
+            brand_id,
+            views_7,
+            views_14,
+            views_21,
+            views_30,
+            views_90,
+            views_365,
+            views_720,
+            total_views,
+            spend_7,
+            spend_14,
+            spend_21,
+            spend_30,
+            spend_90,
+            spend_365,
+            spend_720,
+            total_spend,
+            date
+          FROM (
+            SELECT 
+              *,
+              ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+            FROM analytics.brand_summary
+          ) ranked
+          WHERE rn = 1
+        ) bs ON bb.brand_id = bs.brand_id
         ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
@@ -3499,7 +3546,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
 // Start server
 app.listen(PORT, async () => {
-  console.log(`🚀 QDrant Search Service started on port ${PORT} - v1.2.2`);
+  console.log(`🚀 QDrant Search Service started on port ${PORT}`);
   console.log(`🔗 QDrant URL: ${qdrantUrl}`);
   console.log(
     `🔗 ClickHouse URL: http://${process.env.CLICKHOUSE_HOST}:${
