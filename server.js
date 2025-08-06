@@ -3178,7 +3178,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           );
           try {
             const brandIdList = brandIds
-              .slice(0, 25)
+              .slice(0, limit)
               .map((id) => `'${String(id).replace(/'/g, "''")}'`)
               .join(", ");
             const basicBrandQuery = `SELECT brand_id, name, description, category_id, country_id, avg_duration, updated_at FROM analytics.brand_basic WHERE brand_id IN (${brandIdList})`;
@@ -3415,8 +3415,6 @@ app.post("/search/brands/enhanced", async (req, res) => {
         },
         limit: parseInt(limit),
         userId: userId,
-        dateFrom,
-        dateTo,
       },
       timing: {
         total_ms: Math.round(totalTime),
