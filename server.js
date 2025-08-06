@@ -3580,7 +3580,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
 
 // Start server
 app.listen(PORT, async () => {
-  console.log(`🚀 QDrant Search Service started on port ${PORT}`);
+  console.log(`🚀 QDrant Search Service started on port ${PORT} - v1.2.1`);
   console.log(`🔗 QDrant URL: ${qdrantUrl}`);
   console.log(
     `🔗 ClickHouse URL: http://${process.env.CLICKHOUSE_HOST}:${
