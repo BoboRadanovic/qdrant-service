@@ -4053,6 +4053,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
               cs.date as summary_date,
               cb.legal_name,
               cb.country_id,
+              cb.category_id,
               cb.is_affiliate,
               cb.updated_at
             FROM analytics.company_basic cb
@@ -4084,6 +4085,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
               cs.date as summary_date,
               cb.legal_name,
               cb.country_id,
+              cb.category_id,
               cb.is_affiliate,
               cb.updated_at
             FROM analytics.company_basic cb
@@ -4198,6 +4200,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
           cs.date as summary_date,
           cb.legal_name,
           cb.country_id,
+          cb.category_id,
           cb.is_affiliate,
           cb.updated_at
         FROM analytics.company_basic cb
@@ -4419,9 +4422,12 @@ app.post("/search/companies/enhanced", async (req, res) => {
         const result = {
           companyId: r.companyId,
           isSwiped: isSwiped, // Set based on swiped_companies table
-          name: r.summary_data?.legal_name || r.qdrant_data?.legal_name || null,
+          legalName:
+            r.summary_data?.legal_name || r.qdrant_data?.legal_name || null,
           countryId:
             r.summary_data?.country_id || r.qdrant_data?.country_id || null,
+          categoryId:
+            r.summary_data?.category_id || r.qdrant_data?.category_id || null,
           isAffiliate: r.summary_data?.is_affiliate || false,
           totalSpend: r.summary_data?.total_spend || null,
           // Additional fields for debugging/backward compatibility
@@ -4435,7 +4441,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
         if (index < 3) {
           console.log(`🔍 Final result ${index + 1}:`, {
             companyId: result.companyId,
-            name: result.name,
+            legalName: result.legalName,
             totalSpend: result.totalSpend,
             has_summary_data: !!result.summary_data,
             has_qdrant_data: !!result.qdrant_data,
