@@ -259,6 +259,97 @@ async function fetchExternalBrandIds({
   }
 }
 
+async function fetchExternalCompanyIds({
+  searchTerm,
+  categoryIds,
+  countryId,
+  softwareIds,
+  limit,
+  token,
+}) {
+  try {
+    const payload = {
+      searchTerm: searchTerm || null,
+      categoryIds: categoryIds || null,
+      countryId: countryId || null,
+      softwareIds: softwareIds || null,
+      limit: limit || 200,
+    };
+    // Remove undefined/null keys
+    Object.keys(payload).forEach(
+      (key) => payload[key] === null && delete payload[key]
+    );
+
+    const headers = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await axios.post(
+      "https://apiv1.vidtao.com/api/videosPublic/search-companies-ids",
+      payload,
+      {
+        timeout: 20000,
+        headers,
+      }
+    );
+
+    if (
+      response.data &&
+      response.data.data &&
+      Array.isArray(response.data.data.companyIds)
+    ) {
+      return response.data.data.companyIds;
+    }
+
+    return [];
+  } catch (e) {
+    console.error("Error fetching external company IDs:", e.message);
+    if (e.response) {
+      console.error("Error response status:", e.response.status);
+      console.error(
+        "Error response data:",
+        JSON.stringify(e.response.data, null, 2)
+      );
+    }
+    return [];
+  }
+}
+
+async function fetchSwipedCompanies(companyIds, userId) {
+  if (!userId || !companyIds || companyIds.length === 0) {
+    return [];
+  }
+
+  try {
+    const companyIdList = companyIds
+      .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+      .join(", ");
+
+    const swipedQuery = `
+      SELECT 
+        firebase_id,
+        company_id,
+        created_at,
+        swipe_board_ids
+      FROM analytics.swiped_companies 
+      WHERE firebase_id = '${userId.replace(/'/g, "''")}' 
+      AND company_id IN (${companyIdList})
+    `;
+
+    const resultSet = await clickhouse.query({
+      query: swipedQuery,
+      format: "JSONEachRow",
+    });
+
+    const data = await resultSet.json();
+    return data;
+  } catch (error) {
+    console.error("❌ Swiped companies query failed:", error.message);
+    return [];
+  }
+}
+
 // Initialize Express app
 const app = express();
 
@@ -2860,6 +2951,41 @@ app.post("/search/brands/enhanced", async (req, res) => {
       }
     }
 
+    // Function to fetch swiped companies data
+    async function fetchSwipedCompanies(companyIds, userId) {
+      if (!userId || !companyIds || companyIds.length === 0) {
+        return [];
+      }
+
+      try {
+        const companyIdList = companyIds
+          .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+          .join(", ");
+
+        const swipedQuery = `
+          SELECT 
+            firebase_id,
+            company_id,
+            created_at,
+            swipe_board_ids
+          FROM analytics.swiped_companies 
+          WHERE firebase_id = '${userId.replace(/'/g, "''")}' 
+          AND company_id IN (${companyIdList})
+        `;
+
+        const resultSet = await clickhouse.query({
+          query: swipedQuery,
+          format: "JSONEachRow",
+        });
+
+        const data = await resultSet.json();
+        return data;
+      } catch (error) {
+        console.error("❌ Swiped companies query failed:", error.message);
+        return [];
+      }
+    }
+
     if (normalizedSearchTerm && brandIds.length > 0) {
       // Case 1: We have brand IDs from Qdrant search - query specific brands
       const brandIdList = brandIds
@@ -3544,6 +3670,889 @@ app.post("/search/brands/enhanced", async (req, res) => {
   }
 });
 
+// Enhanced company search endpoint - combines Qdrant search with ClickHouse summary data OR ClickHouse-only search
+app.post("/search/companies/enhanced", async (req, res) => {
+  const startTime = performance.now();
+  console.log(
+    `🚀 Enhanced company search started at ${new Date().toISOString()}`
+  );
+
+  try {
+    const {
+      searchTerm = null,
+      limit = DEFAULT_LIMIT,
+      categoryIds = null,
+      countryId = null,
+      softwareIds = null,
+      sortProp = "totalSpend",
+      orderAsc = false,
+      similarityThreshold = 0.4,
+    } = req.body;
+
+    // Get user_id from authentication middleware
+    const userId = req.user_id;
+
+    // Convert empty string searchTerm to null
+    const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
+    // Convert categoryIds=0 or [0] to null
+    const normalizedCategoryIds =
+      categoryIds === 0 ||
+      (Array.isArray(categoryIds) &&
+        categoryIds.length === 1 &&
+        categoryIds[0] === 0)
+        ? null
+        : categoryIds;
+    // Convert countryId=0 to null
+    const normalizedCountryId = countryId === 0 ? null : countryId;
+    // Convert empty string sortProp to totalSpend and 'total' to 'totalSpend'
+    const normalizedSortProp =
+      sortProp === ""
+        ? "totalSpend"
+        : sortProp === "total"
+        ? "totalSpend"
+        : sortProp;
+
+    console.log("normalizedSortProp", normalizedSortProp);
+
+    // Validate searchTerm if provided
+    if (
+      normalizedSearchTerm !== null &&
+      (typeof normalizedSearchTerm !== "string" ||
+        normalizedSearchTerm.trim() === "")
+    ) {
+      return res.status(400).json({
+        error: "searchTerm must be a non-empty string if provided",
+        code: "INVALID_SEARCH_TERM",
+      });
+    }
+
+    // Validate limit
+    if (limit < 1 || limit > 1000) {
+      return res.status(400).json({
+        error: "Limit must be between 1 and 1000",
+        code: "INVALID_LIMIT",
+      });
+    }
+
+    // Validate sortProp field (if provided)
+    console.log("normalizedSortProp", normalizedSortProp);
+    const validOrderFields = ["totalSpend", "similarity_score"];
+    if (normalizedSortProp && !validOrderFields.includes(normalizedSortProp)) {
+      return res.status(400).json({
+        error: `sortProp must be one of: ${validOrderFields.join(
+          ", "
+        )} or null for auto-detection`,
+        code: "INVALID_SORT_PROP",
+      });
+    }
+
+    // Validate orderAsc (boolean)
+    if (typeof orderAsc !== "boolean") {
+      return res.status(400).json({
+        error: "orderAsc must be a boolean (true = asc, false = desc)",
+        code: "INVALID_ORDER_ASC",
+      });
+    }
+
+    // Validate similarityThreshold
+    if (similarityThreshold < 0 || similarityThreshold > 1) {
+      return res.status(400).json({
+        error: "similarityThreshold must be between 0.0 and 1.0",
+        code: "INVALID_similarityThreshold",
+      });
+    }
+
+    console.log(`📋 Request parameters:`, {
+      searchTerm: normalizedSearchTerm ? `"${normalizedSearchTerm}"` : null,
+      limit,
+      categoryIds: normalizedCategoryIds,
+      countryId: normalizedCountryId,
+      softwareIds,
+      sortProp: normalizedSortProp,
+      orderAsc,
+      similarityThreshold,
+      userId: userId ? "provided" : "none",
+    });
+
+    // Determine default sortProp based on context
+    let effectiveSortProp = normalizedSortProp;
+    if (!effectiveSortProp) {
+      effectiveSortProp = normalizedSearchTerm
+        ? "similarity_score"
+        : "totalSpend";
+    }
+
+    // Map frontend sortProp names to database field names
+    const sortPropMapping = {
+      totalSpend: "total_spend",
+      similarity_score: "similarity_score",
+    };
+
+    // Convert frontend sortProp to database field name
+    const dbSortField = sortPropMapping[effectiveSortProp] || effectiveSortProp;
+
+    // Convert orderAsc to order_direction string
+    const order_direction = orderAsc ? "asc" : "desc";
+    const order_by = dbSortField;
+
+    console.log(
+      `🔍 Enhanced company search: ${
+        normalizedSearchTerm ? `"${normalizedSearchTerm}"` : "ClickHouse-only"
+      } (limit: ${limit},  userId: ${userId || "none"})`
+    );
+
+    let qdrantResults = [];
+    let qdrantCompanyIds = [];
+    let embeddingTime = 0;
+    let qdrantTime = 0;
+    let companyIds = [];
+    let externalCompanyIds = [];
+    let externalTime = 0;
+    let parallelExecutionTime = 0;
+    let clickhouseData = [];
+    let clickhouseTime = 0;
+    let swipedCompaniesData = [];
+    let swipedCompaniesTime = 0;
+
+    // PATH 1: Keyword provided - optimized parallel execution
+    if (normalizedSearchTerm) {
+      console.log(
+        `📡 Starting optimized parallel search operations at ${new Date().toISOString()}`
+      );
+      console.log(
+        `📡 Performing Qdrant and external semantic search for: "${normalizedSearchTerm}"`
+      );
+
+      // Determine if external service should be used based on search term characteristics
+      const trimmedSearchTerm = normalizedSearchTerm.trim();
+      const wordCount = trimmedSearchTerm.split(/\s+/).length;
+      const totalLength = trimmedSearchTerm.length;
+      const shouldSkipExternalService = wordCount > 2 && totalLength > 10;
+      const shouldUseExternalService = !shouldSkipExternalService;
+
+      console.log(`🔍 Search term analysis:`);
+      console.log(`   - Word count: ${wordCount} (max: 2)`);
+      console.log(`   - Total length: ${totalLength} (max: 10)`);
+      console.log(
+        `   - Use external service: ${shouldUseExternalService ? "YES" : "NO"}`
+      );
+      if (shouldSkipExternalService) {
+        console.log(
+          `   - ❌ Skipping external service: complex query (${wordCount} words > 2 AND ${totalLength} chars > 10)`
+        );
+      } else {
+        console.log(
+          `   - ✅ Using external service: simple query (${wordCount} words, ${totalLength} chars)`
+        );
+      }
+
+      // Step 1: Start embedding creation and external service call in parallel (if applicable)
+      const parallelStartTime = performance.now();
+
+      const embeddingPromise = createEmbedding(trimmedSearchTerm);
+
+      let externalPromise = null;
+      if (shouldUseExternalService) {
+        console.log(
+          `⚡ Starting embedding creation and external service call in parallel`
+        );
+
+        // Extract token from request headers
+        const authHeader = req.headers["authorization"];
+        const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+
+        externalPromise = fetchExternalCompanyIds({
+          searchTerm,
+          categoryIds,
+          countryId,
+          softwareIds,
+          limit,
+          token,
+        });
+      } else {
+        console.log(
+          `⚡ Starting embedding creation only (external service skipped - complex query)`
+        );
+      }
+
+      // Step 2: Prepare Qdrant filters (can be done while embedding is being created)
+      const filters = { must: [] };
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        filters.must.push({
+          key: "category_id",
+          match: { any: normalizedCategoryIds },
+        });
+      }
+      if (normalizedCountryId && typeof normalizedCountryId === "number") {
+        filters.must.push({
+          key: "country_id",
+          match: { value: normalizedCountryId },
+        });
+      }
+      if (softwareIds && Array.isArray(softwareIds) && softwareIds.length > 0) {
+        filters.must.push({
+          key: "software_id",
+          match: { any: softwareIds },
+        });
+      }
+
+      // Step 3: Wait for embedding to be ready, then start Qdrant search immediately
+      console.log(`🔍 Waiting for embedding to be ready...`);
+      const embedding = await embeddingPromise;
+      embeddingTime = performance.now() - parallelStartTime;
+      console.log(`✅ Embedding created in ${embeddingTime.toFixed(2)}ms`);
+
+      // Step 4: Start Qdrant search immediately (don't wait for external service)
+      const qdrantStartTime = performance.now();
+      console.log(`🔍 Starting Qdrant search at ${new Date().toISOString()}`);
+      const searchBody = {
+        vector: embedding,
+        limit: parseInt(limit),
+        with_payload: true,
+        with_vector: false,
+        params: { hnsw_ef: 32 },
+      };
+
+      if (filters.must.length > 0) {
+        searchBody.filter = filters;
+      }
+      console.log(
+        "searchBody filter:",
+        JSON.stringify(searchBody.filter, null, 2)
+      );
+      try {
+        const searchResponse = await axios.post(
+          `${qdrantUrl}/collections/${COLLECTION_NAME_COMPANIES}/points/search`,
+          searchBody,
+          { headers: buildHeaders(), timeout: 30000 }
+        );
+        qdrantResults = searchResponse.data.result;
+      } catch (error) {
+        console.error(
+          "❌ Qdrant search error:",
+          error.response?.data || error.message
+        );
+        console.error("❌ Search body:", JSON.stringify(searchBody, null, 2));
+        throw error;
+      }
+      qdrantTime = performance.now() - qdrantStartTime;
+      console.log(
+        `✅ Qdrant search completed in ${qdrantTime.toFixed(2)}ms, returned ${
+          qdrantResults.length
+        } results`
+      );
+
+      // Step 5: Process Qdrant results
+      // Filter by similarity threshold
+      const originalResultsCount = qdrantResults.length;
+      qdrantResults = qdrantResults.filter(
+        (result) => result.score >= similarityThreshold
+      );
+      if (originalResultsCount > qdrantResults.length) {
+        console.log(
+          `🔍 Filtered ${
+            originalResultsCount - qdrantResults.length
+          } results below similarity threshold ${similarityThreshold}`
+        );
+      }
+      // Extract company IDs from Qdrant results
+      qdrantCompanyIds = qdrantResults
+        .sort((a, b) => b.score - a.score)
+        .map((result) => result.payload?.company_id || result.id);
+
+      // Step 6: Wait for external service to complete (if applicable)
+      if (externalPromise) {
+        console.log(`🌐 Waiting for external service to complete...`);
+        const extIds = await externalPromise;
+        externalTime = performance.now() - parallelStartTime;
+        externalCompanyIds = extIds || [];
+        console.log(
+          `✅ External service completed in ${externalTime.toFixed(
+            2
+          )}ms, returned ${externalCompanyIds.length} company IDs`
+        );
+      } else {
+        console.log(`🌐 External service skipped (complex query)`);
+        externalTime = 0;
+        externalCompanyIds = [];
+      }
+
+      parallelExecutionTime = Math.max(embeddingTime, externalTime);
+      console.log(
+        `📊 Parallel execution completed in ${parallelExecutionTime.toFixed(
+          2
+        )}ms (embedding: ${embeddingTime.toFixed(
+          2
+        )}ms, external: ${externalTime.toFixed(2)}ms)`
+      );
+
+      // Step 7: Merge Qdrant and external company IDs with priority logic
+      console.log(`🔄 Merging results with priority logic (limit: ${limit})`);
+      console.log(`   - Qdrant results: ${qdrantCompanyIds.length}`);
+      console.log(`   - External results: ${externalCompanyIds.length}`);
+
+      // Start with all Qdrant results (they have priority)
+      const mergedCompanyIds = [...qdrantCompanyIds];
+      const seen = new Set(qdrantCompanyIds);
+
+      // Add external results that aren't already in Qdrant results
+      externalCompanyIds.forEach((companyId) => {
+        if (!seen.has(companyId)) {
+          mergedCompanyIds.push(companyId);
+          seen.add(companyId);
+        }
+      });
+
+      companyIds = mergedCompanyIds.slice(0, limit);
+      console.log(
+        `🔄 Final merged company IDs: ${companyIds.length} (Qdrant: ${
+          qdrantCompanyIds.length
+        }, External unique: ${companyIds.length - qdrantCompanyIds.length})`
+      );
+
+      // Step 8: Fetch ClickHouse data for the merged company IDs
+      if (companyIds.length > 0) {
+        const clickhouseStartTime = performance.now();
+        console.log(
+          `📊 Starting ClickHouse query for ${
+            companyIds.length
+          } specific company IDs at ${new Date().toISOString()}`
+        );
+
+        // Build WHERE clause for specific company IDs
+        const companyIdList = companyIds
+          .map((id) => `'${String(id).replace(/'/g, "''")}'`)
+          .join(", ");
+
+        let query;
+        if (effectiveSortProp === "similarity_score") {
+          // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
+          query = `
+            SELECT 
+              cb.company_id,
+              COALESCE(cs.views_7, 0) as views_7,
+              COALESCE(cs.views_14, 0) as views_14,
+              COALESCE(cs.views_21, 0) as views_21,
+              COALESCE(cs.views_30, 0) as views_30,
+              COALESCE(cs.views_90, 0) as views_90,
+              COALESCE(cs.views_365, 0) as views_365,
+              COALESCE(cs.views_720, 0) as views_720,
+              COALESCE(cs.total_views, 0) as total_views,
+              COALESCE(cs.spend_7, 0) as spend_7,
+              COALESCE(cs.spend_14, 0) as spend_14,
+              COALESCE(cs.spend_21, 0) as spend_21,
+              COALESCE(cs.spend_30, 0) as spend_30,
+              COALESCE(cs.spend_90, 0) as spend_90,
+              COALESCE(cs.spend_365, 0) as spend_365,
+              COALESCE(cs.spend_720, 0) as spend_720,
+              COALESCE(cs.total_spend, 0) as total_spend,
+              cs.date as summary_date,
+              cb.legal_name,
+              cb.country_id,
+              cb.is_affiliate,
+              cb.updated_at
+            FROM analytics.company_basic cb
+            LEFT JOIN analytics.company_summary cs ON cb.company_id = cs.company_id
+            WHERE cb.company_id IN (${companyIdList})
+          `;
+        } else {
+          // For other sort fields, use ClickHouse ordering
+          const whereClause = `WHERE cb.company_id IN (${companyIdList})`;
+          query = `
+            SELECT 
+              cb.company_id,
+              COALESCE(cs.views_7, 0) as views_7,
+              COALESCE(cs.views_14, 0) as views_14,
+              COALESCE(cs.views_21, 0) as views_21,
+              COALESCE(cs.views_30, 0) as views_30,
+              COALESCE(cs.views_90, 0) as views_90,
+              COALESCE(cs.views_365, 0) as views_365,
+              COALESCE(cs.views_720, 0) as views_720,
+              COALESCE(cs.total_views, 0) as total_views,
+              COALESCE(cs.spend_7, 0) as spend_7,
+              COALESCE(cs.spend_14, 0) as spend_14,
+              COALESCE(cs.spend_21, 0) as spend_21,
+              COALESCE(cs.spend_30, 0) as spend_30,
+              COALESCE(cs.spend_90, 0) as spend_90,
+              COALESCE(cs.spend_365, 0) as spend_365,
+              COALESCE(cs.spend_720, 0) as spend_720,
+              COALESCE(cs.total_spend, 0) as total_spend,
+              cs.date as summary_date,
+              cb.legal_name,
+              cb.country_id,
+              cb.is_affiliate,
+              cb.updated_at
+            FROM analytics.company_basic cb
+            LEFT JOIN analytics.company_summary cs ON cb.company_id = cs.company_id
+            ${whereClause}
+            ORDER BY ${order_by} ${order_direction.toUpperCase()}
+          `;
+        }
+
+        console.log(
+          `📊 Starting ClickHouse query for ${
+            companyIds.length
+          } specific company IDs at ${new Date().toISOString()}`
+        );
+        console.log(`🔍 ClickHouse query to execute:`, query);
+
+        // Execute both queries in parallel if userId is provided
+        if (userId) {
+          console.log(
+            `🔄 Executing ClickHouse and swiped companies queries in parallel`
+          );
+          const [clickhouseResult, swipedResult] = await Promise.all([
+            clickhouse.query({
+              query: query,
+              format: "JSONEachRow",
+            }),
+            fetchSwipedCompanies(companyIds, userId),
+          ]);
+
+          clickhouseData = await clickhouseResult.json();
+          swipedCompaniesData = swipedResult;
+        } else {
+          // Only fetch ClickHouse data if no userId
+          const resultSet = await clickhouse.query({
+            query: query,
+            format: "JSONEachRow",
+          });
+
+          clickhouseData = await resultSet.json();
+        }
+
+        // Deduplicate companies: keep only the latest record per company_id based on summary_date
+        if (clickhouseData.length > 0) {
+          const companyMap = new Map();
+          clickhouseData.forEach((record) => {
+            const companyId = record.company_id;
+            const currentDate = new Date(record.summary_date || "1970-01-01");
+
+            if (
+              !companyMap.has(companyId) ||
+              new Date(companyMap.get(companyId).summary_date || "1970-01-01") <
+                currentDate
+            ) {
+              companyMap.set(companyId, record);
+            }
+          });
+          clickhouseData = Array.from(companyMap.values());
+          console.log(
+            `🔍 After deduplication: ${clickhouseData.length} unique companies`
+          );
+        }
+
+        clickhouseTime = performance.now() - clickhouseStartTime;
+
+        console.log(
+          `✅ ClickHouse query completed in ${clickhouseTime.toFixed(
+            2
+          )}ms, returned ${clickhouseData.length} records`
+        );
+
+        if (userId) {
+          console.log(
+            `✅ Swiped companies query completed, found ${swipedCompaniesData.length} records`
+          );
+        }
+      }
+    }
+
+    // Handle ClickHouse-only search (no keyword provided)
+    if (!normalizedSearchTerm) {
+      // Case 2: No keyword - direct ClickHouse query with filters
+      console.log(
+        `📊 Starting direct ClickHouse company search with filters at ${new Date().toISOString()}`
+      );
+
+      const clickhouseStartTime = performance.now();
+
+      // Build WHERE clause for filters
+      // Note: company_summary table only contains company_id, views, spend, and date
+      // Category, country, software filters are not available in this table
+      const whereClause = "";
+
+      const query = `
+        SELECT 
+          cb.company_id,
+          COALESCE(cs.views_7, 0) as views_7,
+          COALESCE(cs.views_14, 0) as views_14,
+          COALESCE(cs.views_21, 0) as views_21,
+          COALESCE(cs.views_30, 0) as views_30,
+          COALESCE(cs.views_90, 0) as views_90,
+          COALESCE(cs.views_365, 0) as views_365,
+          COALESCE(cs.views_720, 0) as views_720,
+          COALESCE(cs.total_views, 0) as total_views,
+          COALESCE(cs.spend_7, 0) as spend_7,
+          COALESCE(cs.spend_14, 0) as spend_14,
+          COALESCE(cs.spend_21, 0) as spend_21,
+          COALESCE(cs.spend_30, 0) as spend_30,
+          COALESCE(cs.spend_90, 0) as spend_90,
+          COALESCE(cs.spend_365, 0) as spend_365,
+          COALESCE(cs.spend_720, 0) as spend_720,
+          COALESCE(cs.total_spend, 0) as total_spend,
+          cs.date as summary_date,
+          cb.legal_name,
+          cb.country_id,
+          cb.is_affiliate,
+          cb.updated_at
+        FROM analytics.company_basic cb
+        LEFT JOIN (
+          SELECT 
+            company_id,
+            views_7,
+            views_14,
+            views_21,
+            views_30,
+            views_90,
+            views_365,
+            views_720,
+            total_views,
+            spend_7,
+            spend_14,
+            spend_21,
+            spend_30,
+            spend_90,
+            spend_365,
+            spend_720,
+            total_spend,
+            date
+          FROM (
+            SELECT 
+              *,
+              ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY date DESC) as rn
+            FROM analytics.company_summary
+          ) ranked
+          WHERE rn = 1
+        ) cs ON cb.company_id = cs.company_id
+        ${whereClause}
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}
+        LIMIT ${parseInt(limit)}
+      `;
+
+      console.log(`📊 Executing direct ClickHouse company query with filters`);
+
+      try {
+        const resultSet = await clickhouse.query({
+          query: query,
+          format: "JSONEachRow",
+        });
+
+        clickhouseData = await resultSet.json();
+        clickhouseTime = performance.now() - clickhouseStartTime;
+
+        console.log(
+          `✅ ClickHouse returned ${
+            clickhouseData.length
+          } records in ${clickhouseTime.toFixed(2)}ms`
+        );
+
+        // If userId is provided, fetch swiped companies data for the returned company IDs
+        if (userId && clickhouseData.length > 0) {
+          const returnedCompanyIds = clickhouseData.map(
+            (item) => item.company_id
+          );
+
+          swipedCompaniesData = await fetchSwipedCompanies(
+            returnedCompanyIds,
+            userId
+          );
+          swipedCompaniesTime = performance.now() - clickhouseStartTime;
+          console.log(
+            `✅ Swiped companies query completed in ${swipedCompaniesTime.toFixed(
+              2
+            )}ms, found ${swipedCompaniesData.length} records`
+          );
+        }
+      } catch (clickhouseError) {
+        console.error(
+          "❌ ClickHouse company query failed:",
+          clickhouseError.message
+        );
+        clickhouseData = [];
+      }
+    }
+
+    const totalTime = performance.now() - startTime;
+
+    // Step 3: Format results based on search type
+    const enhancedResults = [];
+    let filteredOutCount = 0;
+
+    // Create a map of swiped companies for quick lookup
+    const swipedCompaniesMap = new Map();
+    swipedCompaniesData.forEach((item) => {
+      swipedCompaniesMap.set(item.company_id, item);
+    });
+
+    if (normalizedSearchTerm) {
+      // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
+      const clickhouseMap = new Map();
+      clickhouseData.forEach((item) => {
+        clickhouseMap.set(item.company_id, item);
+      });
+
+      // If we have no Qdrant results but have external results, use those
+      if (qdrantResults.length === 0 && companyIds.length > 0) {
+        companyIds.forEach((companyId) => {
+          const clickhouseInfo = clickhouseMap.get(companyId);
+          const swipedInfo = swipedCompaniesMap.get(companyId);
+
+          // Only include companies that have ClickHouse data
+          if (clickhouseInfo) {
+            const enhancedResult = {
+              companyId: companyId,
+              similarity_score: null,
+              qdrant_data: null,
+              summary_data: clickhouseInfo,
+              swiped_data: swipedInfo || null,
+            };
+
+            enhancedResults.push(enhancedResult);
+          } else {
+            filteredOutCount++;
+          }
+        });
+      } else {
+        // Combine Qdrant results with ClickHouse data
+        qdrantResults.forEach((qdrantResult) => {
+          const companyId = qdrantResult.payload?.company_id || qdrantResult.id;
+          const clickhouseInfo = clickhouseMap.get(companyId);
+          const swipedInfo = swipedCompaniesMap.get(companyId);
+
+          // Only include companies that have ClickHouse data
+          if (clickhouseInfo) {
+            const enhancedResult = {
+              companyId: companyId,
+              similarity_score: qdrantResult.score,
+              qdrant_data: qdrantResult.payload || null,
+              summary_data: clickhouseInfo,
+              swiped_data: swipedInfo || null,
+            };
+
+            enhancedResults.push(enhancedResult);
+          } else {
+            filteredOutCount++;
+          }
+        });
+      }
+    } else {
+      // Case 2: ClickHouse-only search - format ClickHouse data directly
+      clickhouseData.forEach((clickhouseResult) => {
+        const swipedInfo = swipedCompaniesMap.get(clickhouseResult.company_id);
+
+        const enhancedResult = {
+          companyId: clickhouseResult.company_id,
+          similarity_score: null, // No similarity score for direct ClickHouse search
+          // No Qdrant data available
+          qdrant_data: null,
+          // ClickHouse summary data
+          summary_data: clickhouseResult,
+          // Swiped companies data (if available)
+          swiped_data: swipedInfo || null,
+        };
+
+        enhancedResults.push(enhancedResult);
+      });
+    }
+
+    // Sort results based on the effective sort property
+    if (normalizedSearchTerm) {
+      // When we have searchTerm, we need to sort the combined results
+      if (effectiveSortProp === "similarity_score") {
+        // Only sort by similarity when no sortProp was provided or explicitly requested
+        console.log(
+          `🔄 Sorting by similarity_score (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          const scoreA = a.similarity_score || 0;
+          const scoreB = b.similarity_score || 0;
+          return orderAsc ? scoreA - scoreB : scoreB - scoreA;
+        });
+      } else {
+        // Sort by the specified field (prioritize user choice)
+        console.log(
+          `🔄 Sorting by ${effectiveSortProp} (${orderAsc ? "asc" : "desc"})`
+        );
+        enhancedResults.sort((a, b) => {
+          let valueA, valueB;
+
+          switch (dbSortField) {
+            case "total_spend":
+              valueA = a.summary_data?.total_spend ?? 0;
+              valueB = b.summary_data?.total_spend ?? 0;
+              break;
+            default:
+              valueA = a.summary_data?.[dbSortField] ?? 0;
+              valueB = b.summary_data?.[dbSortField] ?? 0;
+          }
+
+          return orderAsc ? valueA - valueB : valueB - valueA;
+        });
+      }
+    } else {
+      console.log(
+        `🔄 ClickHouse-only search, sorted by ${order_by} (${order_direction})`
+      );
+    }
+
+    // Log filtering results
+    if (filteredOutCount > 0) {
+      console.log(
+        `🔍 Filtered out ${filteredOutCount} companies without ClickHouse data`
+      );
+    }
+
+    // Format response to match frontend expectations (based on original fullSearch structure)
+    console.log(
+      `🔍 Final response formatting: ${enhancedResults.length} enhanced results`
+    );
+
+    const data = {
+      results: enhancedResults.map((r, index) => {
+        const isSwiped = r.swiped_data ? true : false;
+
+        const result = {
+          companyId: r.companyId,
+          isSwiped: isSwiped, // Set based on swiped_companies table
+          name: r.summary_data?.legal_name || r.qdrant_data?.legal_name || null,
+          countryId:
+            r.summary_data?.country_id || r.qdrant_data?.country_id || null,
+          isAffiliate: r.summary_data?.is_affiliate || false,
+          totalSpend: r.summary_data?.total_spend || null,
+          // Additional fields for debugging/backward compatibility
+          similarity_score: r.similarity_score,
+          qdrant_data: r.qdrant_data,
+          summary_data: r.summary_data,
+          swiped_data: r.swiped_data, // Include swiped data for debugging
+        };
+
+        // Log first 3 results to see what's being formatted
+        if (index < 3) {
+          console.log(`🔍 Final result ${index + 1}:`, {
+            companyId: result.companyId,
+            name: result.name,
+            totalSpend: result.totalSpend,
+            has_summary_data: !!result.summary_data,
+            has_qdrant_data: !!result.qdrant_data,
+          });
+        }
+
+        return result;
+      }),
+    };
+
+    const response = {
+      success: true,
+      search_type: normalizedSearchTerm
+        ? "semantic_plus_clickhouse"
+        : "clickhouse_only",
+      keyword: normalizedSearchTerm || null,
+      total_results: enhancedResults.length,
+      qdrant_matches: qdrantResults.length,
+      external_matches: externalCompanyIds.length,
+      external_matches_used: companyIds.length - qdrantCompanyIds.length,
+      external_service_used: normalizedSearchTerm
+        ? externalCompanyIds.length > 0 || externalTime > 0
+        : false,
+      clickhouse_matches: clickhouseData.length,
+      swiped_matches: swipedCompaniesData.length,
+      parameters: {
+        search_filters: {
+          category_id: categoryIds,
+          country_id: countryId,
+          software_id: softwareIds,
+        },
+        similarityThreshold: normalizedSearchTerm ? similarityThreshold : null,
+        clickhouse_ordering: {
+          order_by: order_by,
+          order_direction: order_direction,
+        },
+        limit: parseInt(limit),
+        userId: userId,
+      },
+      timing: {
+        total_ms: Math.round(totalTime),
+        parallel_execution_ms: Math.round(parallelExecutionTime),
+        embedding_ms: Math.round(embeddingTime),
+        qdrant_search_ms: Math.round(qdrantTime),
+        clickhouse_query_ms: Math.round(clickhouseTime),
+        swiped_companies_query_ms: Math.round(swipedCompaniesTime),
+        external_service_ms: Math.round(externalTime),
+      },
+      data: data,
+    };
+
+    const searchTypeDesc = normalizedSearchTerm
+      ? `semantic + ClickHouse`
+      : `ClickHouse-only`;
+    console.log(
+      `✅ Enhanced company search (${searchTypeDesc}) completed in ${totalTime.toFixed(
+        2
+      )}ms - ${enhancedResults.length} results (Qdrant: ${
+        qdrantResults.length
+      }, External available: ${externalCompanyIds.length}, External used: ${
+        companyIds.length - qdrantCompanyIds.length
+      }, ClickHouse: ${clickhouseData.length}, Swiped: ${
+        swipedCompaniesData.length
+      })`
+    );
+    console.log(`📊 Final timing breakdown:`);
+    console.log(`   - Total time: ${totalTime.toFixed(2)}ms`);
+    console.log(
+      `   - Parallel execution: ${parallelExecutionTime.toFixed(2)}ms`
+    );
+    console.log(`   - Embedding: ${embeddingTime.toFixed(2)}ms`);
+    console.log(`   - External service: ${externalTime.toFixed(2)}ms`);
+    console.log(`   - Qdrant search: ${qdrantTime.toFixed(2)}ms`);
+    console.log(`   - ClickHouse query: ${clickhouseTime.toFixed(2)}ms`);
+    console.log(`   - Swiped companies: ${swipedCompaniesTime.toFixed(2)}ms`);
+    console.log(`🏁 Response sent at ${new Date().toISOString()}`);
+
+    res.status(200).json(response);
+  } catch (error) {
+    const totalTime = performance.now() - startTime;
+    console.error(
+      `❌ Enhanced company search error (after ${totalTime.toFixed(2)}ms):`,
+      error.message
+    );
+    console.error(`🚨 Error occurred at ${new Date().toISOString()}`);
+
+    // Handle specific error types
+    if (error.code === "ECONNREFUSED") {
+      return res.status(503).json({
+        error: "Unable to connect to Qdrant service",
+        code: "QDRANT_UNAVAILABLE",
+      });
+    }
+
+    if (error.response?.status === 404) {
+      return res.status(404).json({
+        error: `Collection '${COLLECTION_NAME_COMPANIES}' not found`,
+        code: "COLLECTION_NOT_FOUND",
+      });
+    }
+
+    if (error.message.includes("Failed to create embedding")) {
+      return res.status(503).json({
+        error: "Failed to create embedding",
+        code: "EMBEDDING_ERROR",
+      });
+    }
+
+    res.status(500).json({
+      error: "Internal server error",
+      code: "INTERNAL_ERROR",
+      message:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`🚀 QDrant Search Service started on port ${PORT}`);
@@ -3581,6 +4590,9 @@ app.listen(PORT, async () => {
   );
   console.log(
     `  POST /search/companies/filtered - Filtered company search with category_id, country_id, software_id`
+  );
+  console.log(
+    `  POST /search/companies/enhanced - Dual-mode: Semantic search (with keyword) OR ClickHouse-only (without keyword)`
   );
   console.log(
     `  POST /videos/summary - Get YouTube video summary data from ClickHouse with ordering`
