@@ -69,7 +69,7 @@ const clickhouse = createClient({
     max_parallel_replicas: 2,
 
     // Network optimizations
-    keep_alive_timeout: 300,
+    tcp_keep_alive_timeout: 300,
   },
 });
 
