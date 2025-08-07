@@ -4709,6 +4709,7 @@ app.listen(PORT, async () => {
   console.log(
     `  GET /debug/companies-data - Sample data from companies collection`
   );
+  console.log(`VERSION 07082025`);
 });
 
 // Graceful shutdown
