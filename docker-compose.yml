@@ -10,6 +10,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - ALLOW_ALL_CORS=true
     env_file:
       - .env
     volumes:

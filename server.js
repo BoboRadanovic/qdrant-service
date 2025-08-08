@@ -414,18 +414,28 @@ async function fetchSwipedCompanies(companyIds, userId) {
 const app = express();
 
 // CORS configuration
-const corsOptions = {
-  origin: [
-    "https://vidtao.com",
-    "https://www.vidtao.com",
-    "https://v2.vidtao.com",
-    "http://localhost:3000",
-    "http://localhost:3001",
-  ],
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-};
+const allowAllCors =
+  process.env.ALLOW_ALL_CORS === "true" ||
+  process.env.NODE_ENV === "development";
+const corsOptions = allowAllCors
+  ? {
+      origin: true,
+      methods: ["GET", "POST"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+      credentials: true,
+    }
+  : {
+      origin: [
+        "https://vidtao.com",
+        "https://www.vidtao.com",
+        "https://v2.vidtao.com",
+        "http://localhost:3000",
+        "http://localhost:3001",
+      ],
+      methods: ["GET", "POST"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+      credentials: true,
+    };
 
 app.use(cors(corsOptions));
 app.use(express.json());

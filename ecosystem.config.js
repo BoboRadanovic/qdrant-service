@@ -10,10 +10,12 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 3001,
+        ALLOW_ALL_CORS: "true",
       },
       env_production: {
         NODE_ENV: "production",
         PORT: 3001,
+        ALLOW_ALL_CORS: "true",
       },
       // Restart policy
       restart_delay: 4000,
