@@ -1863,8 +1863,27 @@ app.post("/search/videos/enhanced", async (req, res) => {
               brand_name,
               published_at,
               updated_at
-            FROM analytics.yt_video_summary 
-            WHERE yt_video_id IN (${videoIdList})
+            FROM (
+              SELECT 
+                yt_video_id,
+                last_30,
+                last_60,
+                last_90,
+                total,
+                category_id,
+                language,
+                listed,
+                duration,
+                title,
+                frame,
+                brand_name,
+                published_at,
+                updated_at,
+                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
+              FROM analytics.yt_video_summary 
+              WHERE yt_video_id IN (${videoIdList})
+            ) ranked
+            WHERE rn = 1
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
@@ -1884,8 +1903,27 @@ app.post("/search/videos/enhanced", async (req, res) => {
               brand_name,
               published_at,
               updated_at
-            FROM analytics.yt_video_summary 
-            WHERE yt_video_id IN (${videoIdList})
+            FROM (
+              SELECT 
+                yt_video_id,
+                last_30,
+                last_60,
+                last_90,
+                total,
+                category_id,
+                language,
+                listed,
+                duration,
+                title,
+                frame,
+                brand_name,
+                published_at,
+                updated_at,
+                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
+              FROM analytics.yt_video_summary 
+              WHERE yt_video_id IN (${videoIdList})
+            ) ranked
+            WHERE rn = 1
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
           `;
         }
@@ -2043,8 +2081,27 @@ app.post("/search/videos/enhanced", async (req, res) => {
           brand_name,
           published_at,
           updated_at
-        FROM analytics.yt_video_summary 
-        ${whereClause}
+        FROM (
+          SELECT 
+            yt_video_id,
+            last_30,
+            last_60,
+            last_90,
+            total,
+            category_id,
+            language,
+            listed,
+            duration,
+            title,
+            frame,
+            brand_name,
+            published_at,
+            updated_at,
+            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
+          FROM analytics.yt_video_summary 
+          ${whereClause}
+        ) ranked
+        WHERE rn = 1
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
@@ -2468,7 +2525,7 @@ app.post("/videos/summary", async (req, res) => {
       .map((id) => `'${id.replace(/'/g, "''")}'`)
       .join(", ");
 
-    // Build the query
+    // Build the query with deduplication to ensure latest record per video
     const query = `
       SELECT 
         yt_video_id,
@@ -2485,8 +2542,27 @@ app.post("/videos/summary", async (req, res) => {
         brand_name,
         published_at,
         updated_at
-      FROM analytics.yt_video_summary 
-      WHERE yt_video_id IN (${videoIdList})
+      FROM (
+        SELECT 
+          yt_video_id,
+          last_30,
+          last_60,
+          last_90,
+          total,
+          category_id,
+          language,
+          listed,
+          duration,
+          title,
+          frame,
+          brand_name,
+          published_at,
+          updated_at,
+          ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
+        FROM analytics.yt_video_summary 
+        WHERE yt_video_id IN (${videoIdList})
+      ) ranked
+      WHERE rn = 1
       ORDER BY ${order_by} ${order_direction.toUpperCase()}
       LIMIT ${parseInt(limit)}
       OFFSET ${parseInt(offset)}
@@ -3154,7 +3230,35 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.avg_duration,
               bb.updated_at
             FROM analytics.brand_basic bb
-            LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+            LEFT JOIN (
+              SELECT 
+                brand_id,
+                views_7,
+                views_14,
+                views_21,
+                views_30,
+                views_90,
+                views_365,
+                views_720,
+                total_views,
+                spend_7,
+                spend_14,
+                spend_21,
+                spend_30,
+                spend_90,
+                spend_365,
+                spend_720,
+                total_spend,
+                date
+              FROM (
+                SELECT 
+                  *,
+                  ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+                FROM analytics.brand_summary
+                WHERE brand_id IN (${brandIdList})
+              ) ranked
+              WHERE rn = 1
+            ) bs ON bb.brand_id = bs.brand_id
             WHERE bb.brand_id IN (${brandIdList})
           `;
         } else {
@@ -3188,7 +3292,35 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.avg_duration,
               bb.updated_at
             FROM analytics.brand_basic bb
-            LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
+            LEFT JOIN (
+              SELECT 
+                brand_id,
+                views_7,
+                views_14,
+                views_21,
+                views_30,
+                views_90,
+                views_365,
+                views_720,
+                total_views,
+                spend_7,
+                spend_14,
+                spend_21,
+                spend_30,
+                spend_90,
+                spend_365,
+                spend_720,
+                total_spend,
+                date
+              FROM (
+                SELECT 
+                  *,
+                  ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+                FROM analytics.brand_summary
+                WHERE brand_id IN (${brandIdList})
+              ) ranked
+              WHERE rn = 1
+            ) bs ON bb.brand_id = bs.brand_id
             ${whereClause}
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
           `;
@@ -3263,26 +3395,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         swipedBrandsData = await fetchSwipedBrands(brandIds, userId);
       }
 
-      // Deduplicate brands: keep only the latest record per brand_id based on summary_date
-      if (clickhouseData.length > 0) {
-        const brandMap = new Map();
-        clickhouseData.forEach((record) => {
-          const brandId = record.brand_id;
-          const currentDate = new Date(record.summary_date || "1970-01-01");
-
-          if (
-            !brandMap.has(brandId) ||
-            new Date(brandMap.get(brandId).summary_date || "1970-01-01") <
-              currentDate
-          ) {
-            brandMap.set(brandId, record);
-          }
-        });
-        clickhouseData = Array.from(brandMap.values());
-        console.log(
-          `🔍 After deduplication: ${clickhouseData.length} unique brands`
-        );
-      }
+      // Note: Deduplication is now handled at SQL level using ROW_NUMBER() window function
 
       clickhouseTime = performance.now() - clickhouseStartTime;
 
@@ -4130,7 +4243,35 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 cb.is_affiliate,
                 cb.updated_at
               FROM analytics.company_basic cb
-              LEFT JOIN analytics.company_summary cs ON cb.company_id = cs.company_id
+              LEFT JOIN (
+                SELECT 
+                  company_id,
+                  views_7,
+                  views_14,
+                  views_21,
+                  views_30,
+                  views_90,
+                  views_365,
+                  views_720,
+                  total_views,
+                  spend_7,
+                  spend_14,
+                  spend_21,
+                  spend_30,
+                  spend_90,
+                  spend_365,
+                  spend_720,
+                  total_spend,
+                  date
+                FROM (
+                  SELECT 
+                    *,
+                    ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY date DESC) as rn
+                  FROM analytics.company_summary
+                  WHERE company_id IN (${companyIdList})
+                ) ranked
+                WHERE rn = 1
+              ) cs ON cb.company_id = cs.company_id
               WHERE cb.company_id IN (${companyIdList})
             `;
           } else {
@@ -4162,7 +4303,35 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 cb.is_affiliate,
                 cb.updated_at
               FROM analytics.company_basic cb
-              LEFT JOIN analytics.company_summary cs ON cb.company_id = cs.company_id
+              LEFT JOIN (
+                SELECT 
+                  company_id,
+                  views_7,
+                  views_14,
+                  views_21,
+                  views_30,
+                  views_90,
+                  views_365,
+                  views_720,
+                  total_views,
+                  spend_7,
+                  spend_14,
+                  spend_21,
+                  spend_30,
+                  spend_90,
+                  spend_365,
+                  spend_720,
+                  total_spend,
+                  date
+                FROM (
+                  SELECT 
+                    *,
+                    ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY date DESC) as rn
+                  FROM analytics.company_summary
+                  WHERE company_id IN (${companyIdList})
+                ) ranked
+                WHERE rn = 1
+              ) cs ON cb.company_id = cs.company_id
               ${whereClause}
               ORDER BY ${order_by} ${order_direction.toUpperCase()}
             `;
@@ -4237,26 +4406,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
           swipedCompaniesData = await fetchSwipedCompanies(companyIds, userId);
         }
 
-        // Deduplicate companies: keep only the latest record per company_id based on summary_date
-        if (clickhouseData.length > 0) {
-          const companyMap = new Map();
-          clickhouseData.forEach((record) => {
-            const companyId = record.company_id;
-            const currentDate = new Date(record.summary_date || "1970-01-01");
-
-            if (
-              !companyMap.has(companyId) ||
-              new Date(companyMap.get(companyId).summary_date || "1970-01-01") <
-                currentDate
-            ) {
-              companyMap.set(companyId, record);
-            }
-          });
-          clickhouseData = Array.from(companyMap.values());
-          console.log(
-            `🔍 After deduplication: ${clickhouseData.length} unique companies`
-          );
-        }
+        // Note: Deduplication is now handled at SQL level using ROW_NUMBER() window function
 
         clickhouseTime = performance.now() - clickhouseStartTime;
 
