@@ -2078,6 +2078,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
           ? `WHERE ${whereConditions.join(" AND ")}`
           : "";
 
+      // Optimize query: pre-filter top records before expensive deduplication
+      const preFilterLimit = Math.max(parseInt(limit) * 5, 1000); // Get 5x more records than needed, minimum 1000
+
       const query = `
         SELECT 
           yt_video_id,
@@ -2111,8 +2114,13 @@ app.post("/search/videos/enhanced", async (req, res) => {
             published_at,
             updated_at,
             ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-          FROM analytics.yt_video_summary 
-          ${whereClause}
+          FROM (
+            SELECT *
+            FROM analytics.yt_video_summary 
+            ${whereClause}
+            ORDER BY ${order_by} ${order_direction.toUpperCase()}
+            LIMIT ${preFilterLimit}
+          ) top_records
         ) ranked
         WHERE rn = 1
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -3447,6 +3455,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
         ", "
       )})`;
 
+      // Optimize query: pre-filter top brands before expensive deduplication
+      const preFilterLimit = Math.max(parseInt(limit) * 5, 1000); // Get 5x more records than needed, minimum 1000
+
       const query = `
         SELECT 
           bb.brand_id,
@@ -3474,7 +3485,12 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.avg_duration,
           bb.thumbnail,
           bb.updated_at
-        FROM analytics.brand_basic bb
+        FROM (
+          SELECT * FROM analytics.brand_basic
+          ${whereClause}
+          ORDER BY brand_id  -- Pre-sort to get consistent top brands
+          LIMIT ${preFilterLimit}
+        ) bb
         LEFT JOIN (
           SELECT 
             brand_id,
@@ -3503,7 +3519,6 @@ app.post("/search/brands/enhanced", async (req, res) => {
           ) ranked
           WHERE rn = 1
         ) bs ON bb.brand_id = bs.brand_id
-        ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
@@ -4462,6 +4477,9 @@ app.post("/search/companies/enhanced", async (req, res) => {
         ", "
       )})`;
 
+      // Optimize query: pre-filter top companies before expensive deduplication
+      const preFilterLimit = Math.max(parseInt(limit) * 5, 1000); // Get 5x more records than needed, minimum 1000
+
       const query = `
         SELECT 
           cb.company_id,
@@ -4487,7 +4505,12 @@ app.post("/search/companies/enhanced", async (req, res) => {
           cb.category_id,
           cb.is_affiliate,
           cb.updated_at
-        FROM analytics.company_basic cb
+        FROM (
+          SELECT * FROM analytics.company_basic
+          ${whereClause}
+          ORDER BY company_id  -- Pre-sort to get consistent top companies
+          LIMIT ${preFilterLimit}
+        ) cb
         LEFT JOIN (
           SELECT 
             company_id,
@@ -4516,7 +4539,6 @@ app.post("/search/companies/enhanced", async (req, res) => {
           ) ranked
           WHERE rn = 1
         ) cs ON cb.company_id = cs.company_id
-        ${whereClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
