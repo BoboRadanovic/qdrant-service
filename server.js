@@ -139,6 +139,12 @@ const COLLECTION_NAME_COMPANIES =
   process.env.COLLECTION_NAME_COMPANIES || "companies";
 const DEFAULT_LIMIT = 200;
 
+// Excluded categories - videos/brands/companies with these categories should not be returned
+const EXCLUDED_CATEGORIES = [
+  66, 957, 55, 71, 75, 68, 57, 73, 60, 70, 7, 53, 530, 1144, 1148, 29, 998, 708,
+  97, 1030, 12, 34, 37, 93,
+];
+
 // Helper function to build headers with API key
 function buildHeaders() {
   const headers = {
@@ -1882,6 +1888,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
                 ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
               FROM analytics.yt_video_summary 
               WHERE yt_video_id IN (${videoIdList})
+              AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
             ) ranked
             WHERE rn = 1
           `;
@@ -1922,6 +1929,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
                 ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
               FROM analytics.yt_video_summary 
               WHERE yt_video_id IN (${videoIdList})
+              AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
             ) ranked
             WHERE rn = 1
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -2059,6 +2067,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
       if (dateTo !== null && dateTo !== undefined) {
         whereConditions.push(`published_at <= '${dateTo}'`);
       }
+
+      // Category exclusion filter
+      whereConditions.push(
+        `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+      );
 
       const whereClause =
         whereConditions.length > 0
@@ -2561,6 +2574,7 @@ app.post("/videos/summary", async (req, res) => {
           ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
         FROM analytics.yt_video_summary 
         WHERE yt_video_id IN (${videoIdList})
+        AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
       ) ranked
       WHERE rn = 1
       ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -3260,10 +3274,13 @@ app.post("/search/brands/enhanced", async (req, res) => {
               WHERE rn = 1
             ) bs ON bb.brand_id = bs.brand_id
             WHERE bb.brand_id IN (${brandIdList})
+            AND bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
-          const whereClause = `WHERE bb.brand_id IN (${brandIdList})`;
+          const whereClause = `WHERE bb.brand_id IN (${brandIdList}) AND bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+            ", "
+          )})`;
           query = `
             SELECT 
               bb.brand_id,
@@ -3426,7 +3443,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: brand_summary table only contains brand_id, views, spend, and date
       // Category, country, software, and duration filters are not available in this table
-      const whereClause = "";
+      const whereClause = `WHERE bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+        ", "
+      )})`;
 
       const query = `
         SELECT 
@@ -4273,10 +4292,13 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 WHERE rn = 1
               ) cs ON cb.company_id = cs.company_id
               WHERE cb.company_id IN (${companyIdList})
+              AND cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
             `;
           } else {
             // For other sort fields, use ClickHouse ordering
-            const whereClause = `WHERE cb.company_id IN (${companyIdList})`;
+            const whereClause = `WHERE cb.company_id IN (${companyIdList}) AND cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+              ", "
+            )})`;
             query = `
               SELECT 
                 cb.company_id,
@@ -4436,7 +4458,9 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: company_summary table only contains company_id, views, spend, and date
       // Category, country, software filters are not available in this table
-      const whereClause = "";
+      const whereClause = `WHERE cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+        ", "
+      )})`;
 
       const query = `
         SELECT 
