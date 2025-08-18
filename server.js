@@ -1549,7 +1549,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const wordCount = trimmedSearchTerm.split(/\s+/).length;
       const totalLength = trimmedSearchTerm.length;
       const shouldSkipExternalService = wordCount > 2 && totalLength > 10;
-      const shouldUseExternalService = !shouldSkipExternalService;
+      const shouldUseExternalService = false; // !shouldSkipExternalService;
 
       console.log(`🔍 Search term analysis:`);
       console.log(`   - Word count: ${wordCount} (max: 2)`);
@@ -3451,13 +3451,13 @@ app.post("/search/brands/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: brand_summary table only contains brand_id, views, spend, and date
       // Category, country, software, and duration filters are not available in this table
-      const whereClause = `WHERE bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+      const whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
         ", "
       )})`;
 
       // Optimize query: pre-filter top brands before expensive deduplication
       const preFilterLimit = Math.max(parseInt(limit) * 5, 1000); // Get 5x more records than needed, minimum 1000
-
+      console.log(`🔍 whereClause limit: ${whereClause} ${preFilterLimit}`);
       const query = `
         SELECT 
           bb.brand_id,
@@ -4473,7 +4473,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: company_summary table only contains company_id, views, spend, and date
       // Category, country, software filters are not available in this table
-      const whereClause = `WHERE cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+      const whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
         ", "
       )})`;
 
