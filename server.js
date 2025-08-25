@@ -214,13 +214,13 @@ async function fetchExternalVideoIds({
   searchTerm,
   categoryIds,
   languageId,
-  videoStatus,
+  showVideos,
   durationMoreThen,
   durationLessThen,
   limit,
   token,
-  DateFrom,
-  DateTo,
+  dateFrom,
+  dateTo,
 }) {
   try {
     // Convert categoryIds=[0] to empty array
@@ -231,19 +231,18 @@ async function fetchExternalVideoIds({
         categoryIds[0] === 0)
         ? []
         : categoryIds;
-
     const payload = {
       searchTerm: searchTerm || null,
       categoryIds: normalizedCategoryIds,
       language: languageId || null,
-      showVideos:
-        videoStatus !== undefined && videoStatus !== null ? videoStatus : null,
+      showVideos, // Pass videoStatus directly (can be "all", "public", "unlisted", or null)
       durationMoreThen: durationMoreThen || null,
       durationLessThen: durationLessThen || null,
       limit: limit || 200,
-      DateFrom: DateFrom || null,
-      DateTo: DateTo || null,
+      dateFrom: dateFrom || null,
+      dateTo: dateTo || null,
     };
+    //console.log("payload", payload);
     // Remove undefined/null keys
     Object.keys(payload).forEach(
       (key) => payload[key] === null && delete payload[key]
@@ -1407,7 +1406,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       limit = DEFAULT_LIMIT,
       categoryIds = null,
       languageId = null,
-      videoStatus = "all", // 'all', 'public', 'unlisted'
+      showVideos = "all", // 'all', 'public', 'unlisted'
       durationMoreThen = null,
       durationLessThen = null,
       sortProp = null, // Will default based on context
@@ -1416,7 +1415,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       dateFrom = null, // New parameter for date range filtering
       dateTo = null, // New parameter for date range filtering
     } = req.body;
-
+    console.log("showVideos", showVideos);
     // Get user_id from authentication middleware
     const userId = req.user_id;
 
@@ -1495,7 +1494,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       limit,
       categoryIds: normalizedCategoryIds,
       languageId,
-      videoStatus,
+      showVideos,
       durationMoreThen,
       durationLessThen,
       sortProp: finalSortProp,
@@ -1594,18 +1593,25 @@ app.post("/search/videos/enhanced", async (req, res) => {
         const authHeader = req.headers["authorization"];
         const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
 
-        externalPromise = fetchExternalVideoIds({
+        const externalPayload = {
           searchTerm,
           categoryIds,
           languageId,
-          videoStatus: videoStatus === "all" ? null : videoStatus,
+          showVideos: showVideos, // "all", "public", "unlisted", or null
           durationMoreThen,
           durationLessThen,
           limit,
           token,
           dateFrom,
           dateTo,
-        });
+        };
+
+        console.log(
+          `🌐 External service payload:`,
+          JSON.stringify(externalPayload, null, 2)
+        );
+
+        externalPromise = fetchExternalVideoIds(externalPayload);
       } else {
         console.log(
           `⚡ Starting embedding creation only (external service skipped - complex query)`
@@ -1627,10 +1633,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
       if (languageId && typeof languageId === "string") {
         filters.must.push({ key: "language", match: { value: languageId } });
       }
-      if (videoStatus !== "all" && typeof videoStatus === "string") {
-        if (videoStatus === "public") {
+      if (showVideos !== "all" && typeof showVideos === "string") {
+        if (showVideos === "public") {
           filters.must.push({ key: "unlisted", match: { value: false } });
-        } else if (videoStatus === "unlisted") {
+        } else if (showVideos === "unlisted") {
           filters.must.push({ key: "unlisted", match: { value: true } });
         }
       }
@@ -2054,11 +2060,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
       }
 
       // Video status filter (note: ClickHouse uses 'listed', opposite of 'unlisted')
-      if (videoStatus !== "all" && typeof videoStatus === "string") {
-        if (videoStatus === "public") {
+      if (showVideos !== "all" && typeof showVideos === "string") {
+        if (showVideos === "public") {
           // Public videos are listed (listed = 1)
           whereConditions.push(`listed = 1`);
-        } else if (videoStatus === "unlisted") {
+        } else if (showVideos === "unlisted") {
           // Unlisted videos are not listed (listed = 0)
           whereConditions.push(`listed = 0`);
         }
@@ -2391,7 +2397,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         search_filters: {
           category_id: normalizedCategoryIds,
           language: languageId,
-          is_unlisted: videoStatus !== "all",
+          is_unlisted: showVideos !== "all",
           duration_range: {
             min: durationMoreThen,
             max: durationLessThen,
