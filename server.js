@@ -39,6 +39,14 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Memory configuration (must be defined before ClickHouse client initialization)
+const CLICKHOUSE_MAX_MEMORY =
+  parseInt(process.env.CLICKHOUSE_MAX_MEMORY) || 16000000000; // 16GB default
+const CLICKHOUSE_MAX_EXTERNAL_MEMORY =
+  parseInt(process.env.CLICKHOUSE_MAX_EXTERNAL_MEMORY) || 12000000000; // 12GB default
+const CLICKHOUSE_MAX_THREADS =
+  parseInt(process.env.CLICKHOUSE_MAX_THREADS) || 4;
+
 // Initialize ClickHouse client
 const clickhouse = createClient({
   url: `http://${process.env.CLICKHOUSE_HOST}:${
@@ -50,11 +58,11 @@ const clickhouse = createClient({
   clickhouse_settings: {
     async_insert: 1,
     wait_for_async_insert: 1,
-    // Conservative performance optimizations for shared server
-    max_threads: 8,
-    max_memory_usage: 8000000000, // 8GB (12.5% of 64GB server)
-    max_bytes_before_external_group_by: 6000000000,
-    max_bytes_before_external_sort: 6000000000,
+    // Increased memory limits for large queries
+    max_threads: CLICKHOUSE_MAX_THREADS,
+    max_memory_usage: CLICKHOUSE_MAX_MEMORY,
+    max_bytes_before_external_group_by: CLICKHOUSE_MAX_EXTERNAL_MEMORY,
+    max_bytes_before_external_sort: CLICKHOUSE_MAX_EXTERNAL_MEMORY,
 
     // Optimize for large IN clauses
     max_expanded_ast_elements: 1000000,
@@ -64,12 +72,16 @@ const clickhouse = createClient({
     optimize_aggregation_in_order: 1,
     optimize_read_in_order: 1,
 
-    // Conservative parallel processing for shared server
-    parallel_replicas_count: 2,
-    max_parallel_replicas: 2,
+    // Reduced parallel processing to use less memory
+    parallel_replicas_count: 1,
+    max_parallel_replicas: 1,
 
     // Network optimizations
     tcp_keep_alive_timeout: 300,
+
+    // Additional memory optimizations
+    max_memory_usage_for_user: 16000000000, // 16GB per user
+    max_memory_usage_for_all_queries: 32000000000, // 32GB total
   },
 });
 
@@ -2062,10 +2074,20 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
       // Date range filter
       if (dateFrom !== null && dateFrom !== undefined) {
-        whereConditions.push(`published_at >= '${dateFrom}'`);
+        // Convert date to ClickHouse format (YYYY-MM-DD)
+        const fromDate = new Date(dateFrom);
+        if (!isNaN(fromDate.getTime())) {
+          const formattedFromDate = fromDate.toISOString().split("T")[0]; // YYYY-MM-DD format
+          whereConditions.push(`published_at >= '${formattedFromDate}'`);
+        }
       }
       if (dateTo !== null && dateTo !== undefined) {
-        whereConditions.push(`published_at <= '${dateTo}'`);
+        // Convert date to ClickHouse format (YYYY-MM-DD)
+        const toDate = new Date(dateTo);
+        if (!isNaN(toDate.getTime())) {
+          const formattedToDate = toDate.toISOString().split("T")[0]; // YYYY-MM-DD format
+          whereConditions.push(`published_at <= '${formattedToDate}'`);
+        }
       }
 
       // Category exclusion filter
@@ -3455,75 +3477,72 @@ app.post("/search/brands/enhanced", async (req, res) => {
         ", "
       )})`;
 
-      // Optimize query: pre-filter top 500 brands before expensive deduplication
-      const preFilterLimit = 1000; // Take top 500 brands, then deduplicate and limit
+      // Optimize query: use a more memory-efficient approach
+      const preFilterLimit = 500; // Reduced from 1000 to use less memory
 
       console.log(
         `🔍 whereClause: ${whereClause}, preFilterLimit: ${preFilterLimit}`
       );
+
+      // Use a simpler query that's more memory-efficient
       const query = `
         SELECT 
-          brand_id,
-          COALESCE(views_7, 0) as views_7,
-          COALESCE(views_14, 0) as views_14,
-          COALESCE(views_21, 0) as views_21,
-          COALESCE(views_30, 0) as views_30,
-          COALESCE(views_90, 0) as views_90,
-          COALESCE(views_365, 0) as views_365,
-          COALESCE(views_720, 0) as views_720,
-          COALESCE(total_views, 0) as total_views,
-          COALESCE(spend_7, 0) as spend_7,
-          COALESCE(spend_14, 0) as spend_14,
-          COALESCE(spend_21, 0) as spend_21,
-          COALESCE(spend_30, 0) as spend_30,
-          COALESCE(spend_90, 0) as spend_90,
-          COALESCE(spend_365, 0) as spend_365,
-          COALESCE(spend_720, 0) as spend_720,
-          COALESCE(total_spend, 0) as total_spend,
-          date as summary_date,
-          name,
-          description,
-          category_id,
-          country_id,
-          avg_duration,
-          thumbnail,
-          updated_at
-        FROM (
+          bb.brand_id,
+          COALESCE(bs.views_7, 0) as views_7,
+          COALESCE(bs.views_14, 0) as views_14,
+          COALESCE(bs.views_21, 0) as views_21,
+          COALESCE(bs.views_30, 0) as views_30,
+          COALESCE(bs.views_90, 0) as views_90,
+          COALESCE(bs.views_365, 0) as views_365,
+          COALESCE(bs.views_720, 0) as views_720,
+          COALESCE(bs.total_views, 0) as total_views,
+          COALESCE(bs.spend_7, 0) as spend_7,
+          COALESCE(bs.spend_14, 0) as spend_14,
+          COALESCE(bs.spend_21, 0) as spend_21,
+          COALESCE(bs.spend_30, 0) as spend_30,
+          COALESCE(bs.spend_90, 0) as spend_90,
+          COALESCE(bs.spend_365, 0) as spend_365,
+          COALESCE(bs.spend_720, 0) as spend_720,
+          COALESCE(bs.total_spend, 0) as total_spend,
+          bs.date as summary_date,
+          bb.name,
+          bb.description,
+          bb.category_id,
+          bb.country_id,
+          bb.avg_duration,
+          bb.thumbnail,
+          bb.updated_at
+        FROM analytics.brand_basic bb
+        LEFT JOIN (
           SELECT 
-            bb.brand_id,
-            bb.name,
-            bb.description,
-            bb.category_id,
-            bb.country_id,
-            bb.avg_duration,
-            bb.thumbnail,
-            bb.updated_at,
-            bs.views_7,
-            bs.views_14,
-            bs.views_21,
-            bs.views_30,
-            bs.views_90,
-            bs.views_365,
-            bs.views_720,
-            bs.total_views,
-            bs.spend_7,
-            bs.spend_14,
-            bs.spend_21,
-            bs.spend_30,
-            bs.spend_90,
-            bs.spend_365,
-            bs.spend_720,
-            bs.total_spend,
-            bs.date,
-            ROW_NUMBER() OVER (PARTITION BY bb.brand_id ORDER BY bs.date DESC) as rn
-          FROM analytics.brand_basic bb
-          LEFT JOIN analytics.brand_summary bs ON bb.brand_id = bs.brand_id
-          ${whereClause}
-          ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
-          LIMIT ${preFilterLimit}
-        ) ranked
-        WHERE rn = 1
-        ORDER BY COALESCE(${order_by}, 0) ${order_direction.toUpperCase()}, brand_id
+            brand_id,
+            views_7,
+            views_14,
+            views_21,
+            views_30,
+            views_90,
+            views_365,
+            views_720,
+            total_views,
+            spend_7,
+            spend_14,
+            spend_21,
+            spend_30,
+            spend_90,
+            spend_365,
+            spend_720,
+            total_spend,
+            date
+          FROM (
+            SELECT 
+              *,
+              ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+            FROM analytics.brand_summary
+          ) ranked
+          WHERE rn = 1
+        ) bs ON bb.brand_id = bs.brand_id
+        ${whereClause}
+        ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
         LIMIT ${parseInt(limit)}
       `;
 
@@ -3533,6 +3552,13 @@ app.post("/search/brands/enhanced", async (req, res) => {
         const resultSet = await clickhouse.query({
           query: query,
           format: "JSONEachRow",
+          clickhouse_settings: {
+            // Query-specific memory settings for brand search
+            max_memory_usage: 20000000000, // 20GB for this specific query
+            max_bytes_before_external_group_by: 15000000000, // 15GB
+            max_bytes_before_external_sort: 15000000000, // 15GB
+            max_threads: 2, // Use fewer threads for this query
+          },
         });
 
         clickhouseData = await resultSet.json();
