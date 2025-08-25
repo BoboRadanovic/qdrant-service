@@ -3477,14 +3477,14 @@ app.post("/search/brands/enhanced", async (req, res) => {
         ", "
       )})`;
 
-      // Optimize query: use a more memory-efficient approach
-      const preFilterLimit = 500; // Reduced from 1000 to use less memory
+      // Take 1000 brands based on WHERE and ORDER clause, then get first 200 distinct
+      const preFilterLimit = 1000; // Take top 1000, then get first 200 distinct
 
       console.log(
         `🔍 whereClause: ${whereClause}, preFilterLimit: ${preFilterLimit}`
       );
 
-      // Use a simpler query that's more memory-efficient
+      // Fast approach: get 1000 records, then deduplicate programmatically
       const query = `
         SELECT 
           bb.brand_id,
@@ -3543,7 +3543,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         ) bs ON bb.brand_id = bs.brand_id
         ${whereClause}
         ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
-        LIMIT ${parseInt(limit)}
+        LIMIT ${preFilterLimit}
       `;
 
       console.log(`📊 Executing direct ClickHouse brand query with filters`);
@@ -3561,13 +3561,33 @@ app.post("/search/brands/enhanced", async (req, res) => {
           },
         });
 
-        clickhouseData = await resultSet.json();
+        const rawData = await resultSet.json();
         clickhouseTime = performance.now() - clickhouseStartTime;
 
         console.log(
           `✅ ClickHouse returned ${
-            clickhouseData.length
-          } records in ${clickhouseTime.toFixed(2)}ms`
+            rawData.length
+          } raw records in ${clickhouseTime.toFixed(2)}ms`
+        );
+
+        // Programmatic deduplication: keep first occurrence of each brand_id
+        const seenBrandIds = new Set();
+        clickhouseData = [];
+
+        for (const record of rawData) {
+          if (!seenBrandIds.has(record.brand_id)) {
+            seenBrandIds.add(record.brand_id);
+            clickhouseData.push(record);
+
+            // Stop when we have enough distinct brands
+            if (clickhouseData.length >= parseInt(limit)) {
+              break;
+            }
+          }
+        }
+
+        console.log(
+          `🔍 Deduplicated ${rawData.length} → ${clickhouseData.length} distinct brands`
         );
 
         // If userId is provided, fetch swiped brands data for the returned brand IDs
