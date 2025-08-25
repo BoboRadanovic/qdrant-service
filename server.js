@@ -2178,7 +2178,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           WHERE yt_video_id IN (
             SELECT yt_video_id FROM (
               SELECT *
-              FROM analytics.yt_videos_summary 
+              FROM analytics.yt_video_summary 
               ${whereClause}
               ORDER BY ${order_by} ${order_direction.toUpperCase()}
               LIMIT ${preFilterLimit}
