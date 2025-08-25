@@ -1561,7 +1561,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const wordCount = trimmedSearchTerm.split(/\s+/).length;
       const totalLength = trimmedSearchTerm.length;
       const shouldSkipExternalService = wordCount > 2 && totalLength > 10;
-      const shouldUseExternalService = false; // !shouldSkipExternalService;
+      const shouldUseExternalService = !shouldSkipExternalService;
 
       console.log(`🔍 Search term analysis:`);
       console.log(`   - Word count: ${wordCount} (max: 2)`);
