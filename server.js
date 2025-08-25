@@ -1873,20 +1873,21 @@ app.post("/search/videos/enhanced", async (req, res) => {
           // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
           query = `
             SELECT 
-              yt_video_id,
-              last_30,
-              last_60,
-              last_90,
-              total,
-              category_id,
-              language,
-              listed,
-              duration,
-              title,
-              frame,
-              brand_name,
-              published_at,
-              updated_at
+              vs.yt_video_id,
+              vs.last_30,
+              vs.last_60,
+              vs.last_90,
+              vs.total,
+              vs.category_id,
+              vs.language,
+              vs.listed,
+              vs.duration,
+              vs.title,
+              vs.frame,
+              vs.brand_name,
+              vm.brand_id,
+              vs.published_at,
+              vs.updated_at
             FROM (
               SELECT 
                 yt_video_id,
@@ -1907,27 +1908,36 @@ app.post("/search/videos/enhanced", async (req, res) => {
               FROM analytics.yt_video_summary 
               WHERE yt_video_id IN (${videoIdList})
               AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
-            ) ranked
-            WHERE rn = 1
+            ) vs
+            LEFT JOIN (
+              SELECT 
+                yt_video_id,
+                brand_id,
+                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+              FROM analytics.yt_videos_metrics
+              WHERE yt_video_id IN (${videoIdList})
+            ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
+            WHERE vs.rn = 1
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
           query = `
             SELECT 
-              yt_video_id,
-              last_30,
-              last_60,
-              last_90,
-              total,
-              category_id,
-              language,
-              listed,
-              duration,
-              title,
-              frame,
-              brand_name,
-              published_at,
-              updated_at
+              vs.yt_video_id,
+              vs.last_30,
+              vs.last_60,
+              vs.last_90,
+              vs.total,
+              vs.category_id,
+              vs.language,
+              vs.listed,
+              vs.duration,
+              vs.title,
+              vs.frame,
+              vs.brand_name,
+              vm.brand_id,
+              vs.published_at,
+              vs.updated_at
             FROM (
               SELECT 
                 yt_video_id,
@@ -1948,8 +1958,16 @@ app.post("/search/videos/enhanced", async (req, res) => {
               FROM analytics.yt_video_summary 
               WHERE yt_video_id IN (${videoIdList})
               AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
-            ) ranked
-            WHERE rn = 1
+            ) vs
+            LEFT JOIN (
+              SELECT 
+                yt_video_id,
+                brand_id,
+                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+              FROM analytics.yt_videos_metrics
+              WHERE yt_video_id IN (${videoIdList})
+            ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
+            WHERE vs.rn = 1
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
           `;
         }
@@ -2111,20 +2129,21 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
       const query = `
         SELECT 
-          yt_video_id,
-          last_30,
-          last_60,
-          last_90,
-          total,
-          category_id,
-          language,
-          listed,
-          duration,
-          title,
-          frame,
-          brand_name,
-          published_at,
-          updated_at
+          vs.yt_video_id,
+          vs.last_30,
+          vs.last_60,
+          vs.last_90,
+          vs.total,
+          vs.category_id,
+          vs.language,
+          vs.listed,
+          vs.duration,
+          vs.title,
+          vs.frame,
+          vs.brand_name,
+          vm.brand_id,
+          vs.published_at,
+          vs.updated_at
         FROM (
           SELECT 
             yt_video_id,
@@ -2149,8 +2168,24 @@ app.post("/search/videos/enhanced", async (req, res) => {
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
             LIMIT ${preFilterLimit}
           ) top_records
-        ) ranked
-        WHERE rn = 1
+        ) vs
+        LEFT JOIN (
+          SELECT 
+            yt_video_id,
+            brand_id,
+            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+          FROM analytics.yt_videos_metrics
+          WHERE yt_video_id IN (
+            SELECT yt_video_id FROM (
+              SELECT *
+              FROM analytics.yt_videos_summary 
+              ${whereClause}
+              ORDER BY ${order_by} ${order_direction.toUpperCase()}
+              LIMIT ${preFilterLimit}
+            ) top_records
+          )
+        ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
+        WHERE vs.rn = 1
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
@@ -2367,7 +2402,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           last90Days: r.summary_data?.last_90 ?? null,
           affiliateOfferId: null, // Not available in current data structure
           brandName: r.summary_data?.brand_name || null,
-          brandId: null, // Not available in current data structure
+          brandId: r.summary_data?.brand_id || null,
           // Additional fields for debugging/backward compatibility
           similarity_score: r.similarity_score,
           qdrant_data: r.qdrant_data,
