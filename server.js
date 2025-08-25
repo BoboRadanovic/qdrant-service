@@ -1405,7 +1405,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       searchTerm = null, // Now optional
       limit = DEFAULT_LIMIT,
       categoryIds = null,
-      languageId = null,
+      language = null,
       showVideos = "all", // 'all', 'public', 'unlisted'
       durationMoreThen = null,
       durationLessThen = null,
@@ -1493,7 +1493,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       searchTerm: normalizedSearchTerm ? `"${normalizedSearchTerm}"` : null,
       limit,
       categoryIds: normalizedCategoryIds,
-      languageId,
+      language,
       showVideos,
       durationMoreThen,
       durationLessThen,
@@ -1596,7 +1596,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         const externalPayload = {
           searchTerm,
           categoryIds,
-          languageId,
+          language,
           showVideos: showVideos, // "all", "public", "unlisted", or null
           durationMoreThen,
           durationLessThen,
@@ -1630,8 +1630,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
           match: { any: normalizedCategoryIds },
         });
       }
-      if (languageId && typeof languageId === "string") {
-        filters.must.push({ key: "language", match: { value: languageId } });
+      if (language && typeof language === "string") {
+        filters.must.push({ key: "language", match: { value: language } });
       }
       if (showVideos !== "all" && typeof showVideos === "string") {
         if (showVideos === "public") {
@@ -2055,8 +2055,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
       }
 
       // Language filter
-      if (languageId && typeof languageId === "string") {
-        whereConditions.push(`language = '${languageId.replace(/'/g, "''")}'`);
+      if (language && typeof language === "string") {
+        whereConditions.push(`language = '${language.replace(/'/g, "''")}'`);
       }
 
       // Video status filter (note: ClickHouse uses 'listed', opposite of 'unlisted')
@@ -2396,7 +2396,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       parameters: {
         search_filters: {
           category_id: normalizedCategoryIds,
-          language: languageId,
+          language: language,
           is_unlisted: showVideos !== "all",
           duration_range: {
             min: durationMoreThen,
