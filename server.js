@@ -465,11 +465,29 @@ app.use(express.json({ limit: "10mb" })); // Parse JSON bodies
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500, // Limit each IP to 100 requests per windowMs
+  max: 100, // Limit each IP to 100 requests per windowMs
   message: "Too many requests from this IP, please try again later.",
   skip: (req) => {
+    // Allow specific IP address
     const allowedIPs = ["199.36.158.100"];
-    return allowedIPs.includes(req.ip);
+    if (allowedIPs.includes(req.ip)) {
+      return true;
+    }
+
+    // Allow requests from your website domain
+    const referer = req.get("Referer") || "";
+    const origin = req.get("Origin") || "";
+
+    const allowedDomains = [
+      "https://www.vidtao.com",
+      "http://www.vidtao.com",
+      "https://vidtao.com",
+      "http://vidtao.com",
+    ];
+
+    return allowedDomains.some(
+      (domain) => referer.startsWith(domain) || origin.startsWith(domain)
+    );
   },
 });
 app.use(limiter);
