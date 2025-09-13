@@ -2138,7 +2138,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
 
       // Category exclusion filter
       whereConditions.push(
-        `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+        `total > 100 AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
       );
 
       const whereClause =
