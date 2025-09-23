@@ -15,20 +15,20 @@ Query memory limit exceeded: would use 7.45 GiB (attempt to allocate chunk of 4.
 Add these environment variables to your `.env` file:
 
 ```bash
-# ClickHouse Memory Configuration (in bytes)
-CLICKHOUSE_MAX_MEMORY=20000000000          # 20GB (increased from 16GB)
-CLICKHOUSE_MAX_EXTERNAL_MEMORY=15000000000 # 15GB (increased from 12GB)
-CLICKHOUSE_MAX_THREADS=2                   # Reduced threads to use less memory
+# ClickHouse Memory Configuration (in bytes) - Updated for Large Datasets
+CLICKHOUSE_MAX_MEMORY=48000000000          # 48GB (increased for large datasets)
+CLICKHOUSE_MAX_EXTERNAL_MEMORY=36000000000 # 36GB (increased for large datasets)
+CLICKHOUSE_MAX_THREADS=8                   # Increased threads for better performance
 ```
 
 ### 2. Server Configuration
 
 The server now uses these memory settings by default:
 
-- `max_memory_usage`: 16GB (configurable via `CLICKHOUSE_MAX_MEMORY`)
-- `max_bytes_before_external_group_by`: 12GB (configurable via `CLICKHOUSE_MAX_EXTERNAL_MEMORY`)
-- `max_bytes_before_external_sort`: 12GB (configurable via `CLICKHOUSE_MAX_EXTERNAL_MEMORY`)
-- `max_threads`: 4 (configurable via `CLICKHOUSE_MAX_THREADS`)
+- `max_memory_usage`: 48GB (configurable via `CLICKHOUSE_MAX_MEMORY`)
+- `max_bytes_before_external_group_by`: 36GB (configurable via `CLICKHOUSE_MAX_EXTERNAL_MEMORY`)
+- `max_bytes_before_external_sort`: 36GB (configurable via `CLICKHOUSE_MAX_EXTERNAL_MEMORY`)
+- `max_threads`: 8 (configurable via `CLICKHOUSE_MAX_THREADS`)
 
 ### 3. Query-Specific Settings
 

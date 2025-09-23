@@ -41,11 +41,11 @@ const openai = new OpenAI({
 
 // Memory configuration (must be defined before ClickHouse client initialization)
 const CLICKHOUSE_MAX_MEMORY =
-  parseInt(process.env.CLICKHOUSE_MAX_MEMORY) || 16000000000; // 16GB default
+  parseInt(process.env.CLICKHOUSE_MAX_MEMORY) || 48000000000; // 48GB default (increased for large datasets)
 const CLICKHOUSE_MAX_EXTERNAL_MEMORY =
-  parseInt(process.env.CLICKHOUSE_MAX_EXTERNAL_MEMORY) || 12000000000; // 12GB default
+  parseInt(process.env.CLICKHOUSE_MAX_EXTERNAL_MEMORY) || 36000000000; // 36GB default (increased for large datasets)
 const CLICKHOUSE_MAX_THREADS =
-  parseInt(process.env.CLICKHOUSE_MAX_THREADS) || 4;
+  parseInt(process.env.CLICKHOUSE_MAX_THREADS) || 8; // Increased threads for better performance
 
 // Initialize ClickHouse client
 const clickhouse = createClient({
@@ -80,8 +80,8 @@ const clickhouse = createClient({
     tcp_keep_alive_timeout: 300,
 
     // Additional memory optimizations
-    max_memory_usage_for_user: 16000000000, // 16GB per user
-    max_memory_usage_for_all_queries: 32000000000, // 32GB total
+    max_memory_usage_for_user: 48000000000, // 48GB per user (increased for large datasets)
+    max_memory_usage_for_all_queries: 64000000000, // 64GB total (increased for large datasets)
   },
 });
 
@@ -3616,11 +3616,11 @@ app.post("/search/brands/enhanced", async (req, res) => {
           query: query,
           format: "JSONEachRow",
           clickhouse_settings: {
-            // Query-specific memory settings for brand search
-            max_memory_usage: 20000000000, // 20GB for this specific query
-            max_bytes_before_external_group_by: 15000000000, // 15GB
-            max_bytes_before_external_sort: 15000000000, // 15GB
-            max_threads: 2, // Use fewer threads for this query
+            // Query-specific memory settings for brand search (increased for large datasets)
+            max_memory_usage: 48000000000, // 48GB for this specific query (increased from 20GB)
+            max_bytes_before_external_group_by: 36000000000, // 36GB (increased from 15GB)
+            max_bytes_before_external_sort: 36000000000, // 36GB (increased from 15GB)
+            max_threads: 4, // Increased threads for better performance
           },
         });
 

@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- Memory Configuration for Large Datasets -->
+    <max_memory_usage>64000000000</max_memory_usage>    <!-- 64GB -->
+    <max_memory_usage_for_user>48000000000</max_memory_usage_for_user>    <!-- 48GB per user -->
+    <max_memory_usage_for_all_queries>128000000000</max_memory_usage_for_all_queries>    <!-- 128GB total -->
+
+    <!-- External Memory Settings -->
+    <max_bytes_before_external_group_by>36000000000</max_bytes_before_external_group_by>    <!-- 36GB -->
+    <max_bytes_before_external_sort>36000000000</max_bytes_before_external_sort>    <!-- 36GB -->
+
+    <!-- Thread Configuration -->
+    <max_threads>8</max_threads>
+    <max_execution_threads>8</max_execution_threads>
+
+    <!-- Query Processing -->
+    <max_expanded_ast_elements>1000000</max_expanded_ast_elements>
+    <max_ast_elements>1000000</max_ast_elements>
+
+    <!-- Memory Overcommit Settings -->
+    <memory_overcommit_ratio_denominator>1</memory_overcommit_ratio_denominator>
+    <memory_overcommit_ratio_denominator_for_user>1</memory_overcommit_ratio_denominator_for_user>
+
+    <!-- Network and Connection Settings -->
+    <tcp_keep_alive_timeout>300</tcp_keep_alive_timeout>
+    <keep_alive_timeout>3</keep_alive_timeout>
+
+    <!-- Query Optimization -->
+    <optimize_aggregation_in_order>1</optimize_aggregation_in_order>
+    <optimize_read_in_order>1</optimize_read_in_order>
+
+    <!-- Parallel Processing -->
+    <parallel_replicas_count>1</parallel_replicas_count>
+    <max_parallel_replicas>1</max_parallel_replicas>
+
+    <!-- Logging -->
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
+
+    <!-- HTTP Server -->
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+
+    <!-- Data Storage -->
+    <path>/var/lib/clickhouse/</path>
+    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+
+    <!-- Users Configuration -->
+    <users>
+        <default>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </default>
+    </users>
+
+    <!-- Profiles -->
+    <profiles>
+        <default>
+            <max_memory_usage>64000000000</max_memory_usage>
+            <max_bytes_before_external_group_by>36000000000</max_bytes_before_external_group_by>
+            <max_bytes_before_external_sort>36000000000</max_bytes_before_external_sort>
+            <max_threads>8</max_threads>
+        </default>
+    </profiles>
+
+    <!-- Quotas -->
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <queries>0</queries>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+    </quotas>
+</clickhouse>
