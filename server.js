@@ -3367,13 +3367,23 @@ app.post("/search/brands/enhanced", async (req, res) => {
               WHERE rn = 1
             ) bs ON bb.brand_id = bs.brand_id
             WHERE bb.brand_id IN (${brandIdList})
-            AND bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
+            AND ${
+              normalizedCategoryIds &&
+              Array.isArray(normalizedCategoryIds) &&
+              normalizedCategoryIds.length > 0
+                ? `bb.category_id IN (${normalizedCategoryIds.join(", ")})`
+                : `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+            }
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
-          const whereClause = `WHERE bb.brand_id IN (${brandIdList}) AND bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-            ", "
-          )})`;
+          const whereClause = `WHERE bb.brand_id IN (${brandIdList}) AND ${
+            normalizedCategoryIds &&
+            Array.isArray(normalizedCategoryIds) &&
+            normalizedCategoryIds.length > 0
+              ? `bb.category_id IN (${normalizedCategoryIds.join(", ")})`
+              : `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+          }`;
           query = `
             SELECT 
               bb.brand_id,
@@ -3536,9 +3546,21 @@ app.post("/search/brands/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: brand_summary table only contains brand_id, views, spend, and date
       // Category, country, software, and duration filters are not available in this table
-      const whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-        ", "
-      )})`;
+      let whereClause;
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        // If categoryIds are provided, filter to include only those categories
+        const categoryList = normalizedCategoryIds.join(", ");
+        whereClause = `WHERE category_id IN (${categoryList})`;
+      } else {
+        // If no categoryIds provided, exclude the standard excluded categories
+        whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+          ", "
+        )})`;
+      }
 
       // Take 1000 brands based on WHERE and ORDER clause, then get first 200 distinct
       const preFilterLimit = 1000; // Take top 1000, then get first 200 distinct
@@ -4420,13 +4442,23 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 WHERE rn = 1
               ) cs ON cb.company_id = cs.company_id
               WHERE cb.company_id IN (${companyIdList})
-              AND cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
+              AND ${
+                normalizedCategoryIds &&
+                Array.isArray(normalizedCategoryIds) &&
+                normalizedCategoryIds.length > 0
+                  ? `cb.category_id IN (${normalizedCategoryIds.join(", ")})`
+                  : `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+              }
             `;
           } else {
             // For other sort fields, use ClickHouse ordering
-            const whereClause = `WHERE cb.company_id IN (${companyIdList}) AND cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-              ", "
-            )})`;
+            const whereClause = `WHERE cb.company_id IN (${companyIdList}) AND ${
+              normalizedCategoryIds &&
+              Array.isArray(normalizedCategoryIds) &&
+              normalizedCategoryIds.length > 0
+                ? `cb.category_id IN (${normalizedCategoryIds.join(", ")})`
+                : `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+            }`;
             query = `
               SELECT 
                 cb.company_id,
@@ -4586,9 +4618,21 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: company_summary table only contains company_id, views, spend, and date
       // Category, country, software filters are not available in this table
-      const whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-        ", "
-      )})`;
+      let whereClause;
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        // If categoryIds are provided, filter to include only those categories
+        const categoryList = normalizedCategoryIds.join(", ");
+        whereClause = `WHERE category_id IN (${categoryList})`;
+      } else {
+        // If no categoryIds provided, exclude the standard excluded categories
+        whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+          ", "
+        )})`;
+      }
 
       // Optimize query: pre-filter top 500 companies before expensive deduplication
       const preFilterLimit = 500; // Take top 500 companies, then deduplicate and limit
