@@ -11,7 +11,7 @@ services:
       - NODE_ENV=production
       - PORT=3001
       - ALLOW_ALL_CORS=true
-      # ClickHouse Memory Configuration (for large datasets)
+        # ClickHouse Memory Configuration (for large datasets)
       - CLICKHOUSE_MAX_MEMORY=48000000000 # 48GB
       - CLICKHOUSE_MAX_EXTERNAL_MEMORY=36000000000 # 36GB
       - CLICKHOUSE_MAX_THREADS=8 # Increased threads
@@ -37,13 +37,6 @@ services:
       retries: 3
       start_period: 40s
     # Connects to existing QDrant instance on host
-    # Memory limits for large datasets
-    deploy:
-      resources:
-        limits:
-          memory: 64G
-        reservations:
-          memory: 32G
 
 networks:
   qdrant-network:
