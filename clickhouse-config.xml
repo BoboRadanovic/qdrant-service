@@ -16,6 +16,7 @@
     <!-- Query Processing -->
     <max_expanded_ast_elements>1000000</max_expanded_ast_elements>
     <max_ast_elements>1000000</max_ast_elements>
+    <max_query_size>10000000</max_query_size>    <!-- 10MB max query size -->
 
     <!-- Memory Overcommit Settings -->
     <memory_overcommit_ratio_denominator>1</memory_overcommit_ratio_denominator>
@@ -70,6 +71,7 @@
             <max_bytes_before_external_group_by>36000000000</max_bytes_before_external_group_by>
             <max_bytes_before_external_sort>36000000000</max_bytes_before_external_sort>
             <max_threads>8</max_threads>
+            <max_query_size>10000000</max_query_size>            <!-- 10MB max query size -->
         </default>
     </profiles>
 

@@ -1877,8 +1877,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         return chunks;
       };
 
-      // Split video IDs into chunks of 20000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 20000;
+      // Split video IDs into chunks of 5000 (optimized for ClickHouse query limits)
+      const CHUNK_SIZE = 5000;
       const videoIdChunks = chunkArray(videoIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${videoIds.length} video IDs into ${videoIdChunks.length} chunks of ${CHUNK_SIZE}`
@@ -3293,8 +3293,8 @@ app.post("/search/brands/enhanced", async (req, res) => {
         return chunks;
       };
 
-      // Split brand IDs into chunks of 20000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 20000;
+      // Split brand IDs into chunks of 5000 (optimized for ClickHouse query limits)
+      const CHUNK_SIZE = 5000;
       const brandIdChunks = chunkArray(brandIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${brandIds.length} brand IDs into ${brandIdChunks.length} chunks of ${CHUNK_SIZE}`
@@ -4370,8 +4370,8 @@ app.post("/search/companies/enhanced", async (req, res) => {
           return chunks;
         };
 
-        // Split company IDs into chunks of 20000 (optimized for ClickHouse query limits)
-        const CHUNK_SIZE = 20000;
+        // Split company IDs into chunks of 5000 (optimized for ClickHouse query limits)
+        const CHUNK_SIZE = 5000;
         const companyIdChunks = chunkArray(companyIds, CHUNK_SIZE);
         console.log(
           `🔍 Split ${companyIds.length} company IDs into ${companyIdChunks.length} chunks of ${CHUNK_SIZE}`
