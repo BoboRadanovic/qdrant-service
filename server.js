@@ -2885,7 +2885,19 @@ app.post("/search/brands/enhanced", async (req, res) => {
       orderAsc = false,
       similarityThreshold = 0.4,
     } = req.body;
-
+    // Fire-and-forget: store search history without blocking the response
+    axios
+      .post(
+        "https://apiv1.vidtao.com/api/brands/insertSearchData",
+        {
+          headers: req.headers,
+          body: req.body,
+        },
+        { timeout: 2000 }
+      )
+      .catch((err) =>
+        console.warn("History logging failed (non-critical):", err.message)
+      );
     // Get user_id from authentication middleware
     const userId = req.user_id;
 
@@ -3993,7 +4005,18 @@ app.post("/search/companies/enhanced", async (req, res) => {
       orderAsc = false,
       similarityThreshold = 0.4,
     } = req.body;
-
+    axios
+      .post(
+        "https://apiv1.vidtao.com/api/companies/insertSearchData",
+        {
+          headers: req.headers,
+          body: req.body,
+        },
+        { timeout: 2000 }
+      )
+      .catch((err) =>
+        console.warn("History logging failed (non-critical):", err.message)
+      );
     // Get user_id from authentication middleware
     const userId = req.user_id;
 
