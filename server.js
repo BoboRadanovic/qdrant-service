@@ -2897,7 +2897,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
     } = req.body;
     // Fire-and-forget: store search history without blocking the response
     axios
-      .post("https://apiv1.vidtao.com/api/brands/insertSearchData", {
+      .post("https://apiv1.vidtao.com/api/brands/insertSearchData", req.body, {
         headers: {
           authorization: req.headers["authorization"],
           "session-key": req.headers["session-key"],
@@ -4015,13 +4015,17 @@ app.post("/search/companies/enhanced", async (req, res) => {
       similarityThreshold = 0.4,
     } = req.body;
     axios
-      .post("https://apiv1.vidtao.com/api/companies/insertSearchData", {
-        headers: {
-          authorization: req.headers["authorization"],
-          "session-key": req.headers["session-key"],
-        },
-        timeout: 2000,
-      })
+      .post(
+        "https://apiv1.vidtao.com/api/companies/insertSearchData",
+        req.body,
+        {
+          headers: {
+            authorization: req.headers["authorization"],
+            "session-key": req.headers["session-key"],
+          },
+          timeout: 2000,
+        }
+      )
       .catch((err) =>
         console.warn("History logging failed (non-critical):", err.message)
       );
