@@ -4263,10 +4263,10 @@ app.post("/search/companies/enhanced", async (req, res) => {
       if (filters.must.length > 0) {
         searchBody.filter = filters;
       }
-      console.log(
-        "searchBody filter:",
-        JSON.stringify(searchBody.filter, null, 2)
-      );
+      // console.log(
+      //   "searchBody filter:",
+      //   JSON.stringify(searchBody.filter, null, 2)
+      // );
       try {
         const searchResponse = await axios.post(
           `${qdrantUrl}/collections/${COLLECTION_NAME_COMPANIES}/points/search`,
