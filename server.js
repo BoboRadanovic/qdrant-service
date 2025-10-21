@@ -1440,7 +1440,17 @@ app.post("/search/videos/enhanced", async (req, res) => {
     console.log("showVideos", showVideos);
     // Get user_id from authentication middleware
     const userId = req.user_id;
-
+    axios
+      .post("https://apiv1.vidtao.com/api/videos/insertSearchData", req.body, {
+        headers: {
+          authorization: req.headers["authorization"],
+          "session-key": req.headers["session-key"],
+        },
+        timeout: 2000,
+      })
+      .catch((err) =>
+        console.warn("History logging failed (non-critical):", err.message)
+      );
     // Convert empty string searchTerm to null
     const normalizedSearchTerm = searchTerm === "" ? null : searchTerm;
     // Convert categoryIds=0 or [0] to null
@@ -2887,14 +2897,13 @@ app.post("/search/brands/enhanced", async (req, res) => {
     } = req.body;
     // Fire-and-forget: store search history without blocking the response
     axios
-      .post(
-        "https://apiv1.vidtao.com/api/brands/insertSearchData",
-        {
-          headers: req.headers,
-          body: req.body,
+      .post("https://apiv1.vidtao.com/api/brands/insertSearchData", {
+        headers: {
+          authorization: req.headers["authorization"],
+          "session-key": req.headers["session-key"],
         },
-        { timeout: 2000 }
-      )
+        timeout: 2000,
+      })
       .catch((err) =>
         console.warn("History logging failed (non-critical):", err.message)
       );
@@ -4006,14 +4015,13 @@ app.post("/search/companies/enhanced", async (req, res) => {
       similarityThreshold = 0.4,
     } = req.body;
     axios
-      .post(
-        "https://apiv1.vidtao.com/api/companies/insertSearchData",
-        {
-          headers: req.headers,
-          body: req.body,
+      .post("https://apiv1.vidtao.com/api/companies/insertSearchData", {
+        headers: {
+          authorization: req.headers["authorization"],
+          "session-key": req.headers["session-key"],
         },
-        { timeout: 2000 }
-      )
+        timeout: 2000,
+      })
       .catch((err) =>
         console.warn("History logging failed (non-critical):", err.message)
       );
