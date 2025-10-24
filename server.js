@@ -3349,7 +3349,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
               COALESCE(bs.spend_365, 0) as spend_365,
               COALESCE(bs.spend_720, 0) as spend_720,
               COALESCE(bs.total_spend, 0) as total_spend,
-              bs.date as summary_date,
+              bs.latest_date as summary_date,
               bb.name,
               bb.description,
               bb.thumbnail,
@@ -3359,33 +3359,28 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.updated_at
             FROM analytics.brand_basic bb
             LEFT JOIN (
-              SELECT 
-                brand_id,
-                views_7,
-                views_14,
-                views_21,
-                views_30,
-                views_90,
-                views_365,
-                views_720,
-                total_views,
-                spend_7,
-                spend_14,
-                spend_21,
-                spend_30,
-                spend_90,
-                spend_365,
-                spend_720,
-                total_spend,
-                date
-              FROM (
-                SELECT 
-                  *,
-                  ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+                  SELECT 
+                    brand_id,
+                    argMax(views_7, date) AS views_7,
+                    argMax(views_14, date) AS views_14,
+                    argMax(views_21, date) AS views_21,
+                    argMax(views_30, date) AS views_30,
+                    argMax(views_90, date) AS views_90,
+                    argMax(views_365, date) AS views_365,
+                    argMax(views_720, date) AS views_720,
+                    argMax(total_views, date) AS total_views,
+                    argMax(spend_7, date) AS spend_7,
+                    argMax(spend_14, date) AS spend_14,
+                    argMax(spend_21, date) AS spend_21,
+                    argMax(spend_30, date) AS spend_30,
+                    argMax(spend_90, date) AS spend_90,
+                    argMax(spend_365, date) AS spend_365,
+                    argMax(spend_720, date) AS spend_720,
+                    argMax(total_spend, date) AS total_spend,
+                    argMax(date, date) AS latest_date 
                 FROM analytics.brand_summary
                 WHERE brand_id IN (${brandIdList})
-              ) ranked
-              WHERE rn = 1
+                GROUP BY brand_id
             ) bs ON bb.brand_id = bs.brand_id
             WHERE bb.brand_id IN (${brandIdList})
             AND ${
@@ -3424,7 +3419,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
               COALESCE(bs.spend_365, 0) as spend_365,
               COALESCE(bs.spend_720, 0) as spend_720,
               COALESCE(bs.total_spend, 0) as total_spend,
-              bs.date as summary_date,
+              bs.latest_date as summary_date,
               bb.name,
               bb.description,
               bb.thumbnail,
@@ -3434,33 +3429,28 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.updated_at
             FROM analytics.brand_basic bb
             LEFT JOIN (
-              SELECT 
-                brand_id,
-                views_7,
-                views_14,
-                views_21,
-                views_30,
-                views_90,
-                views_365,
-                views_720,
-                total_views,
-                spend_7,
-                spend_14,
-                spend_21,
-                spend_30,
-                spend_90,
-                spend_365,
-                spend_720,
-                total_spend,
-                date
-              FROM (
-                SELECT 
-                  *,
-                  ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
+                  SELECT 
+                    brand_id,
+                    argMax(views_7, date) AS views_7,
+                    argMax(views_14, date) AS views_14,
+                    argMax(views_21, date) AS views_21,
+                    argMax(views_30, date) AS views_30,
+                    argMax(views_90, date) AS views_90,
+                    argMax(views_365, date) AS views_365,
+                    argMax(views_720, date) AS views_720,
+                    argMax(total_views, date) AS total_views,
+                    argMax(spend_7, date) AS spend_7,
+                    argMax(spend_14, date) AS spend_14,
+                    argMax(spend_21, date) AS spend_21,
+                    argMax(spend_30, date) AS spend_30,
+                    argMax(spend_90, date) AS spend_90,
+                    argMax(spend_365, date) AS spend_365,
+                    argMax(spend_720, date) AS spend_720,
+                    argMax(total_spend, date) AS total_spend,
+                    argMax(date, date) AS latest_date 
                 FROM analytics.brand_summary
                 WHERE brand_id IN (${brandIdList})
-              ) ranked
-              WHERE rn = 1
+                GROUP BY brand_id
             ) bs ON bb.brand_id = bs.brand_id
             ${whereClause}
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -3610,7 +3600,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           COALESCE(bs.spend_365, 0) as spend_365,
           COALESCE(bs.spend_720, 0) as spend_720,
           COALESCE(bs.total_spend, 0) as total_spend,
-          bs.date as summary_date,
+          bs.latest_date as summary_date,
           bb.name,
           bb.description,
           bb.category_id,
@@ -3620,39 +3610,37 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.updated_at
         FROM analytics.brand_basic bb
         LEFT JOIN (
-          SELECT 
-            brand_id,
-            views_7,
-            views_14,
-            views_21,
-            views_30,
-            views_90,
-            views_365,
-            views_720,
-            total_views,
-            spend_7,
-            spend_14,
-            spend_21,
-            spend_30,
-            spend_90,
-            spend_365,
-            spend_720,
-            total_spend,
-            date
-          FROM (
             SELECT 
-              *,
-              ROW_NUMBER() OVER (PARTITION BY brand_id ORDER BY date DESC) as rn
-            FROM analytics.brand_summary
-          ) ranked
-          WHERE rn = 1
+              brand_id,
+              argMax(views_7, date) AS views_7,
+              argMax(views_14, date) AS views_14,
+              argMax(views_21, date) AS views_21,
+              argMax(views_30, date) AS views_30,
+              argMax(views_90, date) AS views_90,
+              argMax(views_365, date) AS views_365,
+              argMax(views_720, date) AS views_720,
+              argMax(total_views, date) AS total_views,
+              argMax(spend_7, date) AS spend_7,
+              argMax(spend_14, date) AS spend_14,
+              argMax(spend_21, date) AS spend_21,
+              argMax(spend_30, date) AS spend_30,
+              argMax(spend_90, date) AS spend_90,
+              argMax(spend_365, date) AS spend_365,
+              argMax(spend_720, date) AS spend_720,
+              argMax(total_spend, date) AS total_spend,
+              argMax(date, date) AS latest_date
+          FROM analytics.brand_summary
+          GROUP BY brand_id
         ) bs ON bb.brand_id = bs.brand_id
         ${whereClause}
         ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
         LIMIT ${preFilterLimit}
       `;
 
-      console.log(`📊 Executing direct ClickHouse brand query with filters`);
+      console.log(
+        `📊 Executing direct ClickHouse brand query with filters`,
+        query
+      );
 
       try {
         const resultSet = await clickhouse.query({
@@ -4440,7 +4428,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 COALESCE(cs.spend_365, 0) as spend_365,
                 COALESCE(cs.spend_720, 0) as spend_720,
                 COALESCE(cs.total_spend, 0) as total_spend,
-                cs.date as summary_date,
+                cs.latest_date as summary_date,
                 cb.legal_name,
                 cb.country_id,
                 cb.category_id,
@@ -4448,33 +4436,28 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 cb.updated_at
               FROM analytics.company_basic cb
               LEFT JOIN (
-                SELECT 
-                  company_id,
-                  views_7,
-                  views_14,
-                  views_21,
-                  views_30,
-                  views_90,
-                  views_365,
-                  views_720,
-                  total_views,
-                  spend_7,
-                  spend_14,
-                  spend_21,
-                  spend_30,
-                  spend_90,
-                  spend_365,
-                  spend_720,
-                  total_spend,
-                  date
-                FROM (
-                  SELECT 
-                    *,
-                    ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY date DESC) as rn
-                  FROM analytics.company_summary
-                  WHERE company_id IN (${companyIdList})
-                ) ranked
-                WHERE rn = 1
+                  SELECT
+                    company_id,
+                    argMax(views_7, date) AS views_7,
+                    argMax(views_14, date) AS views_14,
+                    argMax(views_21, date) AS views_21,
+                    argMax(views_30, date) AS views_30,
+                    argMax(views_90, date) AS views_90,
+                    argMax(views_365, date) AS views_365,
+                    argMax(views_720, date) AS views_720,
+                    argMax(total_views, date) AS total_views,
+                    argMax(spend_7, date) AS spend_7,
+                    argMax(spend_14, date) AS spend_14,
+                    argMax(spend_21, date) AS spend_21,
+                    argMax(spend_30, date) AS spend_30,
+                    argMax(spend_90, date) AS spend_90,
+                    argMax(spend_365, date) AS spend_365,
+                    argMax(spend_720, date) AS spend_720,
+                    argMax(total_spend, date) AS total_spend,
+                    argMax(date, date) AS latest_date
+                FROM analytics.company_summary
+                WHERE company_id IN (${companyIdList})
+                GROUP BY company_id
               ) cs ON cb.company_id = cs.company_id
               WHERE cb.company_id IN (${companyIdList})
               AND ${
@@ -4513,7 +4496,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 COALESCE(cs.spend_365, 0) as spend_365,
                 COALESCE(cs.spend_720, 0) as spend_720,
                 COALESCE(cs.total_spend, 0) as total_spend,
-                cs.date as summary_date,
+                cs.latest_date as summary_date,
                 cb.legal_name,
                 cb.country_id,
                 cb.category_id,
@@ -4521,33 +4504,28 @@ app.post("/search/companies/enhanced", async (req, res) => {
                 cb.updated_at
               FROM analytics.company_basic cb
               LEFT JOIN (
-                SELECT 
-                  company_id,
-                  views_7,
-                  views_14,
-                  views_21,
-                  views_30,
-                  views_90,
-                  views_365,
-                  views_720,
-                  total_views,
-                  spend_7,
-                  spend_14,
-                  spend_21,
-                  spend_30,
-                  spend_90,
-                  spend_365,
-                  spend_720,
-                  total_spend,
-                  date
-                FROM (
-                  SELECT 
-                    *,
-                    ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY date DESC) as rn
-                  FROM analytics.company_summary
-                  WHERE company_id IN (${companyIdList})
-                ) ranked
-                WHERE rn = 1
+                SELECT
+                    company_id,
+                    argMax(views_7, date) AS views_7,
+                    argMax(views_14, date) AS views_14,
+                    argMax(views_21, date) AS views_21,
+                    argMax(views_30, date) AS views_30,
+                    argMax(views_90, date) AS views_90,
+                    argMax(views_365, date) AS views_365,
+                    argMax(views_720, date) AS views_720,
+                    argMax(total_views, date) AS total_views,
+                    argMax(spend_7, date) AS spend_7,
+                    argMax(spend_14, date) AS spend_14,
+                    argMax(spend_21, date) AS spend_21,
+                    argMax(spend_30, date) AS spend_30,
+                    argMax(spend_90, date) AS spend_90,
+                    argMax(spend_365, date) AS spend_365,
+                    argMax(spend_720, date) AS spend_720,
+                    argMax(total_spend, date) AS total_spend,
+                    argMax(date, date) AS latest_date
+                FROM analytics.company_summary
+                WHERE company_id IN (${companyIdList})
+                GROUP BY company_id
               ) cs ON cb.company_id = cs.company_id
               ${whereClause}
               ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -4670,68 +4648,62 @@ app.post("/search/companies/enhanced", async (req, res) => {
       }
 
       // Optimize query: pre-filter top 500 companies before expensive deduplication
-      const preFilterLimit = 500; // Take top 500 companies, then deduplicate and limit
+      //const preFilterLimit = 500; // Take top 500 companies, then deduplicate and limit
 
       const query = `
-        SELECT 
-          company_id,
-          COALESCE(views_7, 0) as views_7,
-          COALESCE(views_14, 0) as views_14,
-          COALESCE(views_21, 0) as views_21,
-          COALESCE(views_30, 0) as views_30,
-          COALESCE(views_90, 0) as views_90,
-          COALESCE(views_365, 0) as views_365,
-          COALESCE(views_720, 0) as views_720,
-          COALESCE(total_views, 0) as total_views,
-          COALESCE(spend_7, 0) as spend_7,
-          COALESCE(spend_14, 0) as spend_14,
-          COALESCE(spend_21, 0) as spend_21,
-          COALESCE(spend_30, 0) as spend_30,
-          COALESCE(spend_90, 0) as spend_90,
-          COALESCE(spend_365, 0) as spend_365,
-          COALESCE(spend_720, 0) as spend_720,
-          COALESCE(total_spend, 0) as total_spend,
-          date as summary_date,
-          legal_name,
-          country_id,
-          category_id,
-          is_affiliate,
-          updated_at
-        FROM (
-          SELECT 
-            cb.company_id,
-            cb.legal_name,
-            cb.country_id,
-            cb.category_id,
-            cb.is_affiliate,
-            cb.updated_at,
-            cs.views_7,
-            cs.views_14,
-            cs.views_21,
-            cs.views_30,
-            cs.views_90,
-            cs.views_365,
-            cs.views_720,
-            cs.total_views,
-            cs.spend_7,
-            cs.spend_14,
-            cs.spend_21,
-            cs.spend_30,
-            cs.spend_90,
-            cs.spend_365,
-            cs.spend_720,
-            cs.total_spend,
-            cs.date,
-            ROW_NUMBER() OVER (PARTITION BY cb.company_id ORDER BY cs.date DESC) as rn
-          FROM analytics.company_basic cb
-          LEFT JOIN analytics.company_summary cs ON cb.company_id = cs.company_id
-          ${whereClause}
-          ORDER BY COALESCE(cs.${order_by}, 0) ${order_direction.toUpperCase()}, cb.company_id
-          LIMIT ${preFilterLimit}
-        ) ranked
-        WHERE rn = 1
-        ORDER BY COALESCE(${order_by}, 0) ${order_direction.toUpperCase()}, company_id
-        LIMIT ${parseInt(limit)}
+        SELECT
+          cb.company_id,
+          cb.legal_name,
+          cb.country_id,
+          cb.category_id,
+          cb.is_affiliate,
+          cb.updated_at,
+          COALESCE(cs.views_7, 0) AS views_7,
+          COALESCE(cs.views_14, 0) AS views_14,
+          COALESCE(cs.views_21, 0) AS views_21,
+          COALESCE(cs.views_30, 0) AS views_30,
+          COALESCE(cs.views_90, 0) AS views_90,
+          COALESCE(cs.views_365, 0) AS views_365,
+          COALESCE(cs.views_720, 0) AS views_720,
+          COALESCE(cs.total_views, 0) AS total_views,
+          COALESCE(cs.spend_7, 0) AS spend_7,
+          COALESCE(cs.spend_14, 0) AS spend_14,
+          COALESCE(cs.spend_21, 0) AS spend_21,
+          COALESCE(cs.spend_30, 0) AS spend_30,
+          COALESCE(cs.spend_90, 0) AS spend_90,
+          COALESCE(cs.spend_365, 0) AS spend_365,
+          COALESCE(cs.spend_720, 0) AS spend_720,
+          COALESCE(cs.total_spend, 0) AS total_spend,
+          cs.latest_date AS summary_date
+      FROM analytics.company_basic AS cb
+      LEFT JOIN (
+          SELECT
+              company_id,
+              argMax(views_7, date) AS views_7,
+              argMax(views_14, date) AS views_14,
+              argMax(views_21, date) AS views_21,
+              argMax(views_30, date) AS views_30,
+              argMax(views_90, date) AS views_90,
+              argMax(views_365, date) AS views_365,
+              argMax(views_720, date) AS views_720,
+              argMax(total_views, date) AS total_views,
+              argMax(spend_7, date) AS spend_7,
+              argMax(spend_14, date) AS spend_14,
+              argMax(spend_21, date) AS spend_21,
+              argMax(spend_30, date) AS spend_30,
+              argMax(spend_90, date) AS spend_90,
+              argMax(spend_365, date) AS spend_365,
+              argMax(spend_720, date) AS spend_720,
+              argMax(total_spend, date) AS total_spend,
+              argMax(date, date) AS latest_date
+          FROM analytics.company_summary
+          GROUP BY company_id
+      ) AS cs
+          ON cb.company_id = cs.company_id
+      ${whereClause}
+      ORDER BY COALESCE(cs.${order_by}, 0) ${order_direction.toUpperCase()}, cb.company_id
+      LIMIT ${parseInt(limit)};
+
       `;
 
       console.log(`📊 Executing direct ClickHouse company query with filters`);
