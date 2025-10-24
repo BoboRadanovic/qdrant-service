@@ -3557,7 +3557,10 @@ app.post("/search/brands/enhanced", async (req, res) => {
       // Build WHERE clause for filters
       // Note: brand_summary table only contains brand_id, views, spend, and date
       // Category, country, software, and duration filters are not available in this table
-      let whereClause;
+      // Build WHERE clause for filters
+      const whereConditions = [];
+
+      // Category ID filter
       if (
         normalizedCategoryIds &&
         Array.isArray(normalizedCategoryIds) &&
@@ -3565,13 +3568,24 @@ app.post("/search/brands/enhanced", async (req, res) => {
       ) {
         // If categoryIds are provided, filter to include only those categories
         const categoryList = normalizedCategoryIds.join(", ");
-        whereClause = `WHERE category_id IN (${categoryList})`;
+        whereConditions.push(`bb.category_id IN (${categoryList})`);
       } else {
         // If no categoryIds provided, exclude the standard excluded categories
-        whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-          ", "
-        )})`;
+        whereConditions.push(
+          `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+        );
       }
+
+      // Country ID filter
+      if (normalizedCountryId && typeof normalizedCountryId === "number") {
+        whereConditions.push(`bb.country_id = ${normalizedCountryId}`);
+      }
+
+      // Combine all conditions
+      const whereClause =
+        whereConditions.length > 0
+          ? `WHERE ${whereConditions.join(" AND ")}`
+          : "";
 
       // Take 1000 brands based on WHERE and ORDER clause, then get first 200 distinct
       const preFilterLimit = 1000; // Take top 1000, then get first 200 distinct
@@ -4629,9 +4643,10 @@ app.post("/search/companies/enhanced", async (req, res) => {
       const clickhouseStartTime = performance.now();
 
       // Build WHERE clause for filters
-      // Note: company_summary table only contains company_id, views, spend, and date
-      // Category, country, software filters are not available in this table
-      let whereClause;
+      // Build WHERE clause for filters
+      const whereConditions = [];
+
+      // Category ID filter
       if (
         normalizedCategoryIds &&
         Array.isArray(normalizedCategoryIds) &&
@@ -4639,13 +4654,24 @@ app.post("/search/companies/enhanced", async (req, res) => {
       ) {
         // If categoryIds are provided, filter to include only those categories
         const categoryList = normalizedCategoryIds.join(", ");
-        whereClause = `WHERE category_id IN (${categoryList})`;
+        whereConditions.push(`cb.category_id IN (${categoryList})`);
       } else {
         // If no categoryIds provided, exclude the standard excluded categories
-        whereClause = `WHERE category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-          ", "
-        )})`;
+        whereConditions.push(
+          `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+        );
       }
+
+      // Country ID filter
+      if (normalizedCountryId && typeof normalizedCountryId === "number") {
+        whereConditions.push(`cb.country_id = ${normalizedCountryId}`);
+      }
+
+      // Combine all conditions
+      const whereClause =
+        whereConditions.length > 0
+          ? `WHERE ${whereConditions.join(" AND ")}`
+          : "";
 
       // Optimize query: pre-filter top 500 companies before expensive deduplication
       //const preFilterLimit = 500; // Take top 500 companies, then deduplicate and limit
