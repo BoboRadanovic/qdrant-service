@@ -5107,19 +5107,19 @@ function authenticateUser(req, res, next) {
 // Insert swipe board(s) - supports single or array of swipe boards
 app.post("/swipe-boards", authenticateUser, async (req, res) => {
   try {
-    const { swipe_boards } = req.body;
     const user_id = req.user.uid; // Get from token
+    const payload = req.body;
 
     // Validate input
-    if (!swipe_boards) {
+    if (!payload || (Array.isArray(payload) && payload.length === 0)) {
       return res.status(400).json({
-        error: "swipe_boards is required",
+        error: "Request body is required",
         code: "INVALID_INPUT",
       });
     }
 
     // Normalize to array
-    const boards = Array.isArray(swipe_boards) ? swipe_boards : [swipe_boards];
+    const boards = Array.isArray(payload) ? payload : [payload];
 
     // Validate each board
     for (const board of boards) {
@@ -5136,7 +5136,13 @@ app.post("/swipe-boards", authenticateUser, async (req, res) => {
       swipe_board_id: board.swipe_board_id,
       user_id: user_id,
       name: board.name,
-      created: board.created || new Date().toISOString(),
+      created:
+        board.created ||
+        new Date()
+          .toISOString()
+          .replace("T", " ")
+          .replace("Z", "")
+          .split(".")[0],
       share_id: board.share_id || "",
     }));
 
@@ -5189,11 +5195,20 @@ app.put("/swipe-boards/:swipe_board_id", authenticateUser, async (req, res) => {
           swipe_board_id: parseInt(swipe_board_id),
           user_id: user_id,
           name: name,
-          created: new Date().toISOString(),
+          created: new Date()
+            .toISOString()
+            .replace("T", " ")
+            .replace("Z", "")
+            .split(".")[0],
           share_id: share_id || "",
         },
       ],
       format: "JSONEachRow",
+    });
+
+    // Force merge to deduplicate immediately
+    await clickhouse.query({
+      query: "OPTIMIZE TABLE analytics.swipe_boards FINAL",
     });
 
     console.log(`✅ Updated swipe board ${swipe_board_id} for user ${user_id}`);
@@ -5213,40 +5228,46 @@ app.put("/swipe-boards/:swipe_board_id", authenticateUser, async (req, res) => {
 });
 
 // Delete swipe board
-app.delete(
-  "/swipe-boards/:swipe_board_id",
-  authenticateUser,
-  async (req, res) => {
-    try {
-      const { swipe_board_id } = req.params;
-      const user_id = req.user.uid; // Get from token
+app.delete("/swipe-boards", authenticateUser, async (req, res) => {
+  try {
+    const { swipe_board_id } = req.body;
+    const user_id = req.user.uid; // Get from token
 
-      await clickhouse.query({
-        query: `ALTER TABLE analytics.swipe_boards DELETE WHERE swipe_board_id = {swipe_board_id:Int64} AND user_id = {user_id:String}`,
-        query_params: {
-          swipe_board_id: parseInt(swipe_board_id),
-          user_id: user_id,
-        },
-      });
-
-      console.log(
-        `✅ Deleted swipe board ${swipe_board_id} for user ${user_id}`
-      );
-
-      res.json({
-        success: true,
-        message: `Successfully deleted swipe board ${swipe_board_id}`,
-      });
-    } catch (error) {
-      console.error("❌ Error deleting swipe board:", error);
-      res.status(500).json({
-        error: "Failed to delete swipe board",
-        details: error.message,
-        code: "DELETE_ERROR",
+    if (!swipe_board_id) {
+      return res.status(400).json({
+        error: "swipe_board_id is required",
+        code: "INVALID_INPUT",
       });
     }
+
+    await clickhouse.query({
+      query: `ALTER TABLE analytics.swipe_boards DELETE WHERE swipe_board_id = {swipe_board_id:Int64} AND user_id = {user_id:String}`,
+      query_params: {
+        swipe_board_id: parseInt(swipe_board_id),
+        user_id: user_id,
+      },
+    });
+
+    // Force deletion to take effect immediately
+    await clickhouse.query({
+      query: "OPTIMIZE TABLE analytics.swipe_boards FINAL",
+    });
+
+    console.log(`✅ Deleted swipe board ${swipe_board_id} for user ${user_id}`);
+
+    res.json({
+      success: true,
+      message: `Successfully deleted swipe board ${swipe_board_id}`,
+    });
+  } catch (error) {
+    console.error("❌ Error deleting swipe board:", error);
+    res.status(500).json({
+      error: "Failed to delete swipe board",
+      details: error.message,
+      code: "DELETE_ERROR",
+    });
   }
-);
+});
 
 // ========================================
 // SWIPED VIDEOS ENDPOINTS
@@ -5255,20 +5276,18 @@ app.delete(
 // Insert swiped video(s) - supports single or array, with array of swipe_board_ids
 app.post("/swiped-videos", authenticateUser, async (req, res) => {
   try {
-    const { swiped_videos } = req.body;
     const firebase_id = req.user.uid; // Get from token
+    const payload = req.body;
 
-    if (!swiped_videos) {
+    if (!payload || (Array.isArray(payload) && payload.length === 0)) {
       return res.status(400).json({
-        error: "swiped_videos is required",
+        error: "Request body is required",
         code: "INVALID_INPUT",
       });
     }
 
     // Normalize to array
-    const videos = Array.isArray(swiped_videos)
-      ? swiped_videos
-      : [swiped_videos];
+    const videos = Array.isArray(payload) ? payload : [payload];
 
     // Validate each video
     for (const video of videos) {
@@ -5285,7 +5304,13 @@ app.post("/swiped-videos", authenticateUser, async (req, res) => {
       id: video.id || Date.now() + Math.floor(Math.random() * 1000000),
       firebase_id: firebase_id,
       yt_video_id: video.yt_video_id,
-      created_at: video.created_at || new Date().toISOString(),
+      created_at:
+        video.created_at ||
+        new Date()
+          .toISOString()
+          .replace("T", " ")
+          .replace("Z", "")
+          .split(".")[0],
       swipe_board_ids: Array.isArray(video.swipe_board_ids)
         ? video.swipe_board_ids
         : video.swipe_board_ids
@@ -5344,6 +5369,11 @@ app.delete("/swiped-videos", authenticateUser, async (req, res) => {
       },
     });
 
+    // Force deletion to take effect immediately
+    await clickhouse.query({
+      query: "OPTIMIZE TABLE analytics.swiped_videos FINAL",
+    });
+
     console.log(
       `✅ Deleted swiped video for ${firebase_id}, video: ${yt_video_id}`
     );
@@ -5369,20 +5399,18 @@ app.delete("/swiped-videos", authenticateUser, async (req, res) => {
 // Insert swiped company(ies) - supports single or array, with array of swipe_board_ids
 app.post("/swiped-companies", authenticateUser, async (req, res) => {
   try {
-    const { swiped_companies } = req.body;
     const firebase_id = req.user.uid; // Get from token
+    const payload = req.body;
 
-    if (!swiped_companies) {
+    if (!payload || (Array.isArray(payload) && payload.length === 0)) {
       return res.status(400).json({
-        error: "swiped_companies is required",
+        error: "Request body is required",
         code: "INVALID_INPUT",
       });
     }
 
     // Normalize to array
-    const companies = Array.isArray(swiped_companies)
-      ? swiped_companies
-      : [swiped_companies];
+    const companies = Array.isArray(payload) ? payload : [payload];
 
     // Validate each company
     for (const company of companies) {
@@ -5399,7 +5427,13 @@ app.post("/swiped-companies", authenticateUser, async (req, res) => {
       id: company.id || Date.now() + Math.floor(Math.random() * 1000000),
       firebase_id: firebase_id,
       company_id: company.company_id,
-      created_at: company.created_at || new Date().toISOString(),
+      created_at:
+        company.created_at ||
+        new Date()
+          .toISOString()
+          .replace("T", " ")
+          .replace("Z", "")
+          .split(".")[0],
       swipe_board_ids: Array.isArray(company.swipe_board_ids)
         ? company.swipe_board_ids
         : company.swipe_board_ids
@@ -5458,6 +5492,11 @@ app.delete("/swiped-companies", authenticateUser, async (req, res) => {
       },
     });
 
+    // Force deletion to take effect immediately
+    await clickhouse.query({
+      query: "OPTIMIZE TABLE analytics.swiped_companies FINAL",
+    });
+
     console.log(
       `✅ Deleted swiped company for ${firebase_id}, company: ${company_id}`
     );
@@ -5483,20 +5522,18 @@ app.delete("/swiped-companies", authenticateUser, async (req, res) => {
 // Insert swiped brand(s) - supports single or array, with array of swipe_board_ids
 app.post("/swiped-brands", authenticateUser, async (req, res) => {
   try {
-    const { swiped_brands } = req.body;
     const firebase_id = req.user.uid; // Get from token
+    const payload = req.body;
 
-    if (!swiped_brands) {
+    if (!payload || (Array.isArray(payload) && payload.length === 0)) {
       return res.status(400).json({
-        error: "swiped_brands is required",
+        error: "Request body is required",
         code: "INVALID_INPUT",
       });
     }
 
     // Normalize to array
-    const brands = Array.isArray(swiped_brands)
-      ? swiped_brands
-      : [swiped_brands];
+    const brands = Array.isArray(payload) ? payload : [payload];
 
     // Validate each brand
     for (const brand of brands) {
@@ -5513,7 +5550,13 @@ app.post("/swiped-brands", authenticateUser, async (req, res) => {
       id: brand.id || Date.now() + Math.floor(Math.random() * 1000000),
       firebase_id: firebase_id,
       brand_id: brand.brand_id,
-      created_at: brand.created_at || new Date().toISOString(),
+      created_at:
+        brand.created_at ||
+        new Date()
+          .toISOString()
+          .replace("T", " ")
+          .replace("Z", "")
+          .split(".")[0],
       swipe_board_ids: Array.isArray(brand.swipe_board_ids)
         ? brand.swipe_board_ids
         : brand.swipe_board_ids
@@ -5570,6 +5613,11 @@ app.delete("/swiped-brands", authenticateUser, async (req, res) => {
         firebase_id: firebase_id,
         brand_id: parseInt(brand_id),
       },
+    });
+
+    // Force deletion to take effect immediately
+    await clickhouse.query({
+      query: "OPTIMIZE TABLE analytics.swiped_brands FINAL",
     });
 
     console.log(
@@ -5650,7 +5698,7 @@ app.listen(PORT, async () => {
   );
   console.log(`  POST /swipe-boards - Insert swipe board(s)`);
   console.log(`  PUT /swipe-boards/:swipe_board_id - Update swipe board`);
-  console.log(`  DELETE /swipe-boards/:swipe_board_id - Delete swipe board`);
+  console.log(`  DELETE /swipe-boards - Delete swipe board`);
   console.log(`  POST /swiped-videos - Insert swiped video(s)`);
   console.log(`  DELETE /swiped-videos - Delete swiped video`);
   console.log(`  POST /swiped-companies - Insert swiped company(ies)`);

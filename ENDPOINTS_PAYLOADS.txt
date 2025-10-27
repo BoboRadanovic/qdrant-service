@@ -1,0 +1,274 @@
+===============================================================================
+SWIPE BOARDS API - ALL 9 ENDPOINTS WITH PAYLOADS
+===============================================================================
+
+BASE URL: http://localhost:3001
+AUTHORIZATION: All endpoints require header: Authorization: Bearer <user_id>
+
+===============================================================================
+1. POST /swipe-boards - Insert Swipe Board(s)
+===============================================================================
+
+URL: POST http://localhost:3001/swipe-boards
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+--- SINGLE BOARD ---
+{
+  "swipe_board_id": 999001,
+  "name": "My Board",
+  "share_id": "share123"
+}
+
+--- MULTIPLE BOARDS ---
+[
+  {
+    "swipe_board_id": 999001,
+    "name": "Board 1",
+    "share_id": "share123"
+  },
+  {
+    "swipe_board_id": 999002,
+    "name": "Board 2",
+    "share_id": "share456"
+  }
+]
+
+Required: swipe_board_id, name
+Optional: share_id, created
+
+===============================================================================
+2. PUT /swipe-boards/:swipe_board_id - Update Swipe Board
+===============================================================================
+
+URL: PUT http://localhost:3001/swipe-boards/999001
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+{
+  "name": "Updated Board Name",
+  "share_id": "new_share_id"
+}
+
+Required: name
+Optional: share_id
+
+===============================================================================
+3. DELETE /swipe-boards - Delete Swipe Board
+===============================================================================
+
+URL: DELETE http://localhost:3001/swipe-boards
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+{
+  "swipe_board_id": 999001
+}
+
+Required: swipe_board_id
+
+===============================================================================
+4. POST /swiped-videos - Insert Swiped Video(s)
+===============================================================================
+
+URL: POST http://localhost:3001/swiped-videos
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+--- SINGLE VIDEO ---
+{
+  "yt_video_id": "video123",
+  "swipe_board_ids": [999001, 999002]
+}
+
+--- MULTIPLE VIDEOS ---
+[
+  {
+    "yt_video_id": "video123",
+    "swipe_board_ids": [999001]
+  },
+  {
+    "yt_video_id": "video456",
+    "swipe_board_ids": [999001, 999002]
+  }
+]
+
+Required: yt_video_id
+Optional: swipe_board_ids (array), created_at, id
+
+===============================================================================
+5. DELETE /swiped-videos - Delete Swiped Video
+===============================================================================
+
+URL: DELETE http://localhost:3001/swiped-videos
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+{
+  "yt_video_id": "video123"
+}
+
+Required: yt_video_id
+
+===============================================================================
+6. POST /swiped-companies - Insert Swiped Company(ies)
+===============================================================================
+
+URL: POST http://localhost:3001/swiped-companies
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+--- SINGLE COMPANY ---
+{
+  "company_id": 999001,
+  "swipe_board_ids": [999001, 999002]
+}
+
+--- MULTIPLE COMPANIES ---
+[
+  {
+    "company_id": 999001,
+    "swipe_board_ids": [999001]
+  },
+  {
+    "company_id": 999002,
+    "swipe_board_ids": [999001, 999002]
+  }
+]
+
+Required: company_id
+Optional: swipe_board_ids (array), created_at, id
+
+===============================================================================
+7. DELETE /swiped-companies - Delete Swiped Company
+===============================================================================
+
+URL: DELETE http://localhost:3001/swiped-companies
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+{
+  "company_id": 999001
+}
+
+Required: company_id
+
+===============================================================================
+8. POST /swiped-brands - Insert Swiped Brand(s)
+===============================================================================
+
+URL: POST http://localhost:3001/swiped-brands
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+--- SINGLE BRAND ---
+{
+  "brand_id": 999001,
+  "swipe_board_ids": [999001, 999002]
+}
+
+--- MULTIPLE BRANDS ---
+[
+  {
+    "brand_id": 999001,
+    "swipe_board_ids": [999001]
+  },
+  {
+    "brand_id": 999002,
+    "swipe_board_ids": [999001, 999002]
+  }
+]
+
+Required: brand_id
+Optional: swipe_board_ids (array), created_at, id
+
+===============================================================================
+9. DELETE /swiped-brands - Delete Swiped Brand
+===============================================================================
+
+URL: DELETE http://localhost:3001/swiped-brands
+Headers: 
+  Authorization: Bearer test_user_123
+  Content-Type: application/json
+
+{
+  "brand_id": 999001
+}
+
+Required: brand_id
+
+===============================================================================
+QUICK REFERENCE TABLE
+===============================================================================
+
+#  | Method | Endpoint              | Body Key(s)
+---|--------|-----------------------|------------------------------------------
+1  | POST   | /swipe-boards         | swipe_board_id, name, share_id*
+2  | PUT    | /swipe-boards/:id     | name, share_id*
+3  | DELETE | /swipe-boards         | swipe_board_id
+4  | POST   | /swiped-videos        | yt_video_id, swipe_board_ids*
+5  | DELETE | /swiped-videos        | yt_video_id
+6  | POST   | /swiped-companies     | company_id, swipe_board_ids*
+7  | DELETE | /swiped-companies     | company_id
+8  | POST   | /swiped-brands        | brand_id, swipe_board_ids*
+9  | DELETE | /swiped-brands        | brand_id
+
+* = optional
+
+===============================================================================
+SUCCESS RESPONSE (All endpoints)
+===============================================================================
+
+{
+  "success": true,
+  "message": "Successfully [action]",
+  "count": 1
+}
+
+===============================================================================
+ERROR RESPONSES
+===============================================================================
+
+401 Unauthorized:
+{
+  "error": "Authorization header is required",
+  "code": "UNAUTHORIZED"
+}
+
+400 Bad Request:
+{
+  "error": "Error description",
+  "code": "INVALID_INPUT"
+}
+
+500 Server Error:
+{
+  "error": "Operation failed",
+  "details": "Error details",
+  "code": "INSERT_ERROR|UPDATE_ERROR|DELETE_ERROR"
+}
+
+===============================================================================
+IMPORTANT NOTES
+===============================================================================
+
+1. ALL endpoints require Authorization header with user token
+2. user_id/firebase_id is extracted from token - never send in body
+3. All POST endpoints support single object OR array for bulk operations
+4. swipe_board_ids is an array - items can belong to multiple boards
+5. All DELETE operations now force immediate deletion with OPTIMIZE TABLE FINAL
+6. DateTime fields auto-generated in ClickHouse format (YYYY-MM-DD HH:MM:SS)
+7. No wrapper keys - send objects directly in POST requests
+
+===============================================================================
+EOF
+===============================================================================
+
