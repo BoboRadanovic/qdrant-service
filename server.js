@@ -5049,6 +5049,547 @@ app.post("/search/companies/enhanced", async (req, res) => {
   }
 });
 
+// ========================================
+// AUTHENTICATION MIDDLEWARE
+// ========================================
+
+// Simple auth middleware to extract user_id from token
+// Token format expected: "Bearer <user_id>" or just "<user_id>"
+// For production, use proper JWT verification with Firebase Admin SDK
+function authenticateUser(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).json({
+        error: "Authorization header is required",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    // Extract token from "Bearer <token>" or just "<token>"
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.substring(7)
+      : authHeader;
+
+    if (!token) {
+      return res.status(401).json({
+        error: "Invalid authorization token",
+        code: "UNAUTHORIZED",
+      });
+    }
+
+    // For now, we'll use the token as the user_id directly
+    // In production, decode JWT with Firebase Admin SDK:
+    // const decodedToken = await admin.auth().verifyIdToken(token);
+    // req.user = { uid: decodedToken.uid };
+
+    // Set all three to the same value: user_id = req.user.uid = firebase_id
+    req.user = { uid: token };
+    req.user_id = token;
+    req.firebase_id = token;
+
+    next();
+  } catch (error) {
+    console.error("❌ Authentication error:", error);
+    return res.status(401).json({
+      error: "Authentication failed",
+      details: error.message,
+      code: "UNAUTHORIZED",
+    });
+  }
+}
+
+// ========================================
+// SWIPE BOARDS ENDPOINTS
+// ========================================
+
+// Insert swipe board(s) - supports single or array of swipe boards
+app.post("/swipe-boards", authenticateUser, async (req, res) => {
+  try {
+    const { swipe_boards } = req.body;
+    const user_id = req.user.uid; // Get from token
+
+    // Validate input
+    if (!swipe_boards) {
+      return res.status(400).json({
+        error: "swipe_boards is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    // Normalize to array
+    const boards = Array.isArray(swipe_boards) ? swipe_boards : [swipe_boards];
+
+    // Validate each board
+    for (const board of boards) {
+      if (!board.swipe_board_id || !board.name) {
+        return res.status(400).json({
+          error: "Each swipe board must have swipe_board_id and name",
+          code: "INVALID_INPUT",
+        });
+      }
+    }
+
+    // Prepare values for bulk insert - use user_id from token
+    const values = boards.map((board) => ({
+      swipe_board_id: board.swipe_board_id,
+      user_id: user_id,
+      name: board.name,
+      created: board.created || new Date().toISOString(),
+      share_id: board.share_id || "",
+    }));
+
+    // Insert into ClickHouse
+    await clickhouse.insert({
+      table: "analytics.swipe_boards",
+      values: values,
+      format: "JSONEachRow",
+    });
+
+    console.log(
+      `✅ Inserted ${boards.length} swipe board(s) for user ${user_id}`
+    );
+
+    res.json({
+      success: true,
+      message: `Successfully inserted ${boards.length} swipe board(s)`,
+      count: boards.length,
+    });
+  } catch (error) {
+    console.error("❌ Error inserting swipe boards:", error);
+    res.status(500).json({
+      error: "Failed to insert swipe boards",
+      details: error.message,
+      code: "INSERT_ERROR",
+    });
+  }
+});
+
+// Update swipe board - ReplacingMergeTree will replace based on swipe_board_id
+app.put("/swipe-boards/:swipe_board_id", authenticateUser, async (req, res) => {
+  try {
+    const { swipe_board_id } = req.params;
+    const { name, share_id } = req.body;
+    const user_id = req.user.uid; // Get from token
+
+    // Validate input
+    if (!name) {
+      return res.status(400).json({
+        error: "name is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    // Insert new row (ReplacingMergeTree will eventually replace the old one)
+    await clickhouse.insert({
+      table: "analytics.swipe_boards",
+      values: [
+        {
+          swipe_board_id: parseInt(swipe_board_id),
+          user_id: user_id,
+          name: name,
+          created: new Date().toISOString(),
+          share_id: share_id || "",
+        },
+      ],
+      format: "JSONEachRow",
+    });
+
+    console.log(`✅ Updated swipe board ${swipe_board_id} for user ${user_id}`);
+
+    res.json({
+      success: true,
+      message: `Successfully updated swipe board ${swipe_board_id}`,
+    });
+  } catch (error) {
+    console.error("❌ Error updating swipe board:", error);
+    res.status(500).json({
+      error: "Failed to update swipe board",
+      details: error.message,
+      code: "UPDATE_ERROR",
+    });
+  }
+});
+
+// Delete swipe board
+app.delete(
+  "/swipe-boards/:swipe_board_id",
+  authenticateUser,
+  async (req, res) => {
+    try {
+      const { swipe_board_id } = req.params;
+      const user_id = req.user.uid; // Get from token
+
+      await clickhouse.query({
+        query: `ALTER TABLE analytics.swipe_boards DELETE WHERE swipe_board_id = {swipe_board_id:Int64} AND user_id = {user_id:String}`,
+        query_params: {
+          swipe_board_id: parseInt(swipe_board_id),
+          user_id: user_id,
+        },
+      });
+
+      console.log(
+        `✅ Deleted swipe board ${swipe_board_id} for user ${user_id}`
+      );
+
+      res.json({
+        success: true,
+        message: `Successfully deleted swipe board ${swipe_board_id}`,
+      });
+    } catch (error) {
+      console.error("❌ Error deleting swipe board:", error);
+      res.status(500).json({
+        error: "Failed to delete swipe board",
+        details: error.message,
+        code: "DELETE_ERROR",
+      });
+    }
+  }
+);
+
+// ========================================
+// SWIPED VIDEOS ENDPOINTS
+// ========================================
+
+// Insert swiped video(s) - supports single or array, with array of swipe_board_ids
+app.post("/swiped-videos", authenticateUser, async (req, res) => {
+  try {
+    const { swiped_videos } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!swiped_videos) {
+      return res.status(400).json({
+        error: "swiped_videos is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    // Normalize to array
+    const videos = Array.isArray(swiped_videos)
+      ? swiped_videos
+      : [swiped_videos];
+
+    // Validate each video
+    for (const video of videos) {
+      if (!video.yt_video_id) {
+        return res.status(400).json({
+          error: "Each swiped video must have yt_video_id",
+          code: "INVALID_INPUT",
+        });
+      }
+    }
+
+    // Prepare values - handle swipe_board_ids as array, use firebase_id from token
+    const values = videos.map((video) => ({
+      id: video.id || Date.now() + Math.floor(Math.random() * 1000000),
+      firebase_id: firebase_id,
+      yt_video_id: video.yt_video_id,
+      created_at: video.created_at || new Date().toISOString(),
+      swipe_board_ids: Array.isArray(video.swipe_board_ids)
+        ? video.swipe_board_ids
+        : video.swipe_board_ids
+        ? [video.swipe_board_ids]
+        : [],
+    }));
+
+    // Insert into ClickHouse (ReplacingMergeTree will handle duplicates)
+    await clickhouse.insert({
+      table: "analytics.swiped_videos",
+      values: values,
+      format: "JSONEachRow",
+    });
+
+    console.log(
+      `✅ Inserted ${videos.length} swiped video(s) for user ${firebase_id}`
+    );
+
+    res.json({
+      success: true,
+      message: `Successfully inserted ${videos.length} swiped video(s)`,
+      count: videos.length,
+    });
+  } catch (error) {
+    console.error("❌ Error inserting swiped videos:", error);
+    res.status(500).json({
+      error: "Failed to insert swiped videos",
+      details: error.message,
+      code: "INSERT_ERROR",
+    });
+  }
+});
+
+// Delete swiped video
+app.delete("/swiped-videos", authenticateUser, async (req, res) => {
+  try {
+    const { yt_video_id } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!yt_video_id) {
+      return res.status(400).json({
+        error: "yt_video_id is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    await clickhouse.query({
+      query: `
+        ALTER TABLE analytics.swiped_videos DELETE 
+        WHERE firebase_id = {firebase_id:String} 
+        AND yt_video_id = {yt_video_id:String}
+      `,
+      query_params: {
+        firebase_id: firebase_id,
+        yt_video_id: yt_video_id,
+      },
+    });
+
+    console.log(
+      `✅ Deleted swiped video for ${firebase_id}, video: ${yt_video_id}`
+    );
+
+    res.json({
+      success: true,
+      message: "Successfully deleted swiped video",
+    });
+  } catch (error) {
+    console.error("❌ Error deleting swiped video:", error);
+    res.status(500).json({
+      error: "Failed to delete swiped video",
+      details: error.message,
+      code: "DELETE_ERROR",
+    });
+  }
+});
+
+// ========================================
+// SWIPED COMPANIES ENDPOINTS
+// ========================================
+
+// Insert swiped company(ies) - supports single or array, with array of swipe_board_ids
+app.post("/swiped-companies", authenticateUser, async (req, res) => {
+  try {
+    const { swiped_companies } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!swiped_companies) {
+      return res.status(400).json({
+        error: "swiped_companies is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    // Normalize to array
+    const companies = Array.isArray(swiped_companies)
+      ? swiped_companies
+      : [swiped_companies];
+
+    // Validate each company
+    for (const company of companies) {
+      if (!company.company_id) {
+        return res.status(400).json({
+          error: "Each swiped company must have company_id",
+          code: "INVALID_INPUT",
+        });
+      }
+    }
+
+    // Prepare values - use firebase_id from token
+    const values = companies.map((company) => ({
+      id: company.id || Date.now() + Math.floor(Math.random() * 1000000),
+      firebase_id: firebase_id,
+      company_id: company.company_id,
+      created_at: company.created_at || new Date().toISOString(),
+      swipe_board_ids: Array.isArray(company.swipe_board_ids)
+        ? company.swipe_board_ids
+        : company.swipe_board_ids
+        ? [company.swipe_board_ids]
+        : [],
+    }));
+
+    // Insert into ClickHouse
+    await clickhouse.insert({
+      table: "analytics.swiped_companies",
+      values: values,
+      format: "JSONEachRow",
+    });
+
+    console.log(
+      `✅ Inserted ${companies.length} swiped company(ies) for user ${firebase_id}`
+    );
+
+    res.json({
+      success: true,
+      message: `Successfully inserted ${companies.length} swiped company(ies)`,
+      count: companies.length,
+    });
+  } catch (error) {
+    console.error("❌ Error inserting swiped companies:", error);
+    res.status(500).json({
+      error: "Failed to insert swiped companies",
+      details: error.message,
+      code: "INSERT_ERROR",
+    });
+  }
+});
+
+// Delete swiped company
+app.delete("/swiped-companies", authenticateUser, async (req, res) => {
+  try {
+    const { company_id } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!company_id) {
+      return res.status(400).json({
+        error: "company_id is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    await clickhouse.query({
+      query: `
+        ALTER TABLE analytics.swiped_companies DELETE 
+        WHERE firebase_id = {firebase_id:String} 
+        AND company_id = {company_id:Int64}
+      `,
+      query_params: {
+        firebase_id: firebase_id,
+        company_id: parseInt(company_id),
+      },
+    });
+
+    console.log(
+      `✅ Deleted swiped company for ${firebase_id}, company: ${company_id}`
+    );
+
+    res.json({
+      success: true,
+      message: "Successfully deleted swiped company",
+    });
+  } catch (error) {
+    console.error("❌ Error deleting swiped company:", error);
+    res.status(500).json({
+      error: "Failed to delete swiped company",
+      details: error.message,
+      code: "DELETE_ERROR",
+    });
+  }
+});
+
+// ========================================
+// SWIPED BRANDS ENDPOINTS
+// ========================================
+
+// Insert swiped brand(s) - supports single or array, with array of swipe_board_ids
+app.post("/swiped-brands", authenticateUser, async (req, res) => {
+  try {
+    const { swiped_brands } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!swiped_brands) {
+      return res.status(400).json({
+        error: "swiped_brands is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    // Normalize to array
+    const brands = Array.isArray(swiped_brands)
+      ? swiped_brands
+      : [swiped_brands];
+
+    // Validate each brand
+    for (const brand of brands) {
+      if (!brand.brand_id) {
+        return res.status(400).json({
+          error: "Each swiped brand must have brand_id",
+          code: "INVALID_INPUT",
+        });
+      }
+    }
+
+    // Prepare values - use firebase_id from token
+    const values = brands.map((brand) => ({
+      id: brand.id || Date.now() + Math.floor(Math.random() * 1000000),
+      firebase_id: firebase_id,
+      brand_id: brand.brand_id,
+      created_at: brand.created_at || new Date().toISOString(),
+      swipe_board_ids: Array.isArray(brand.swipe_board_ids)
+        ? brand.swipe_board_ids
+        : brand.swipe_board_ids
+        ? [brand.swipe_board_ids]
+        : [],
+    }));
+
+    // Insert into ClickHouse
+    await clickhouse.insert({
+      table: "analytics.swiped_brands",
+      values: values,
+      format: "JSONEachRow",
+    });
+
+    console.log(
+      `✅ Inserted ${brands.length} swiped brand(s) for user ${firebase_id}`
+    );
+
+    res.json({
+      success: true,
+      message: `Successfully inserted ${brands.length} swiped brand(s)`,
+      count: brands.length,
+    });
+  } catch (error) {
+    console.error("❌ Error inserting swiped brands:", error);
+    res.status(500).json({
+      error: "Failed to insert swiped brands",
+      details: error.message,
+      code: "INSERT_ERROR",
+    });
+  }
+});
+
+// Delete swiped brand
+app.delete("/swiped-brands", authenticateUser, async (req, res) => {
+  try {
+    const { brand_id } = req.body;
+    const firebase_id = req.user.uid; // Get from token
+
+    if (!brand_id) {
+      return res.status(400).json({
+        error: "brand_id is required",
+        code: "INVALID_INPUT",
+      });
+    }
+
+    await clickhouse.query({
+      query: `
+        ALTER TABLE analytics.swiped_brands DELETE 
+        WHERE firebase_id = {firebase_id:String} 
+        AND brand_id = {brand_id:Int64}
+      `,
+      query_params: {
+        firebase_id: firebase_id,
+        brand_id: parseInt(brand_id),
+      },
+    });
+
+    console.log(
+      `✅ Deleted swiped brand for ${firebase_id}, brand: ${brand_id}`
+    );
+
+    res.json({
+      success: true,
+      message: "Successfully deleted swiped brand",
+    });
+  } catch (error) {
+    console.error("❌ Error deleting swiped brand:", error);
+    res.status(500).json({
+      error: "Failed to delete swiped brand",
+      details: error.message,
+      code: "DELETE_ERROR",
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`🚀 QDrant Search Service started on port ${PORT}`);
@@ -5104,6 +5645,18 @@ app.listen(PORT, async () => {
   console.log(
     `  GET /debug/companies-data - Sample data from companies collection`
   );
+  console.log(
+    `\n📋 Swipe Boards Management (9 endpoints, requires auth token):`
+  );
+  console.log(`  POST /swipe-boards - Insert swipe board(s)`);
+  console.log(`  PUT /swipe-boards/:swipe_board_id - Update swipe board`);
+  console.log(`  DELETE /swipe-boards/:swipe_board_id - Delete swipe board`);
+  console.log(`  POST /swiped-videos - Insert swiped video(s)`);
+  console.log(`  DELETE /swiped-videos - Delete swiped video`);
+  console.log(`  POST /swiped-companies - Insert swiped company(ies)`);
+  console.log(`  DELETE /swiped-companies - Delete swiped company`);
+  console.log(`  POST /swiped-brands - Insert swiped brand(s)`);
+  console.log(`  DELETE /swiped-brands - Delete swiped brand`);
   console.log(`VERSION 07082025`);
 });
 
