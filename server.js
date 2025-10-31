@@ -3405,28 +3405,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.updated_at
             FROM analytics.brand_basic bb
             LEFT JOIN (
-                  SELECT 
-                    brand_id,
-                    argMax(views_7, date) AS views_7,
-                    argMax(views_14, date) AS views_14,
-                    argMax(views_21, date) AS views_21,
-                    argMax(views_30, date) AS views_30,
-                    argMax(views_90, date) AS views_90,
-                    argMax(views_365, date) AS views_365,
-                    argMax(views_720, date) AS views_720,
-                    argMax(total_views, date) AS total_views,
-                    argMax(spend_7, date) AS spend_7,
-                    argMax(spend_14, date) AS spend_14,
-                    argMax(spend_21, date) AS spend_21,
-                    argMax(spend_30, date) AS spend_30,
-                    argMax(spend_90, date) AS spend_90,
-                    argMax(spend_365, date) AS spend_365,
-                    argMax(spend_720, date) AS spend_720,
-                    argMax(total_spend, date) AS total_spend,
-                    argMax(date, date) AS latest_date 
-                FROM analytics.brand_summary
+                SELECT *
+                FROM analytics.brand_summary_latest_view
                 WHERE brand_id IN (${brandIdList})
-                GROUP BY brand_id
             ) bs ON bb.brand_id = bs.brand_id
             WHERE bb.brand_id IN (${brandIdList})
             AND ${
@@ -3475,28 +3456,9 @@ app.post("/search/brands/enhanced", async (req, res) => {
               bb.updated_at
             FROM analytics.brand_basic bb
             LEFT JOIN (
-                  SELECT 
-                    brand_id,
-                    argMax(views_7, date) AS views_7,
-                    argMax(views_14, date) AS views_14,
-                    argMax(views_21, date) AS views_21,
-                    argMax(views_30, date) AS views_30,
-                    argMax(views_90, date) AS views_90,
-                    argMax(views_365, date) AS views_365,
-                    argMax(views_720, date) AS views_720,
-                    argMax(total_views, date) AS total_views,
-                    argMax(spend_7, date) AS spend_7,
-                    argMax(spend_14, date) AS spend_14,
-                    argMax(spend_21, date) AS spend_21,
-                    argMax(spend_30, date) AS spend_30,
-                    argMax(spend_90, date) AS spend_90,
-                    argMax(spend_365, date) AS spend_365,
-                    argMax(spend_720, date) AS spend_720,
-                    argMax(total_spend, date) AS total_spend,
-                    argMax(date, date) AS latest_date 
-                FROM analytics.brand_summary
+                SELECT *
+                FROM analytics.brand_summary_latest_view
                 WHERE brand_id IN (${brandIdList})
-                GROUP BY brand_id
             ) bs ON bb.brand_id = bs.brand_id
             ${whereClause}
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
@@ -3669,29 +3631,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
           bb.thumbnail,
           bb.updated_at
         FROM analytics.brand_basic bb
-        LEFT JOIN (
-            SELECT 
-              brand_id,
-              argMax(views_7, date) AS views_7,
-              argMax(views_14, date) AS views_14,
-              argMax(views_21, date) AS views_21,
-              argMax(views_30, date) AS views_30,
-              argMax(views_90, date) AS views_90,
-              argMax(views_365, date) AS views_365,
-              argMax(views_720, date) AS views_720,
-              argMax(total_views, date) AS total_views,
-              argMax(spend_7, date) AS spend_7,
-              argMax(spend_14, date) AS spend_14,
-              argMax(spend_21, date) AS spend_21,
-              argMax(spend_30, date) AS spend_30,
-              argMax(spend_90, date) AS spend_90,
-              argMax(spend_365, date) AS spend_365,
-              argMax(spend_720, date) AS spend_720,
-              argMax(total_spend, date) AS total_spend,
-              argMax(date, date) AS latest_date
-          FROM analytics.brand_summary
-          GROUP BY brand_id
-        ) bs ON bb.brand_id = bs.brand_id
+        LEFT JOIN analytics.brand_summary_latest_view AS bs ON bb.brand_id = bs.brand_id
         ${whereClause}
         ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
         LIMIT ${preFilterLimit}
