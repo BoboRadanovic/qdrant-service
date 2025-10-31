@@ -7,6 +7,52 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
+const admin = require("firebase-admin");
+const serviceAccount = require("./serviceAccount.json");
+const { private_key_id, private_key } = require("./firebasePrivateKey.json");
+
+console.log("=== FIREBASE CONFIG DEBUG ===");
+console.log("📋 Service Account project_id:", serviceAccount.project_id);
+console.log("📋 Service Account client_email:", serviceAccount.client_email);
+console.log("📋 Service Account client_id:", serviceAccount.client_id);
+console.log("🔑 private_key_id from JSON:", private_key_id);
+console.log(
+  "🔑 private_key (first 50 chars):",
+  private_key ? private_key.substring(0, 50) : "MISSING"
+);
+console.log(
+  "🔑 private_key (last 50 chars):",
+  private_key ? private_key.substring(private_key.length - 50) : "MISSING"
+);
+console.log("🔑 private_key length:", private_key ? private_key.length : 0);
+console.log(
+  "🔑 Contains \\n sequences:",
+  private_key ? private_key.includes("\\n") : false
+);
+
+const config = {
+  ...serviceAccount,
+  private_key_id: private_key_id,
+  private_key: private_key.replace(/\\n/g, "\n"),
+};
+
+console.log("🔧 Final config project_id:", config.project_id);
+console.log("🔧 Final config private_key_id:", config.private_key_id);
+console.log(
+  "🔧 Final config private_key (first 50 chars):",
+  config.private_key.substring(0, 50)
+);
+console.log(
+  "🔧 Final config private_key contains actual newlines:",
+  config.private_key.includes("\n")
+);
+console.log("=== END DEBUG ===\n");
+
+admin.initializeApp({
+  credential: admin.credential.cert(config),
+});
+
+const firebaseAuth = admin.auth();
 
 // Validate required environment variables
 if (!process.env.OPENAI_API_KEY) {
@@ -5056,48 +5102,51 @@ app.post("/search/companies/enhanced", async (req, res) => {
 // Simple auth middleware to extract user_id from token
 // Token format expected: "Bearer <user_id>" or just "<user_id>"
 // For production, use proper JWT verification with Firebase Admin SDK
-function authenticateUser(req, res, next) {
+async function authenticateUser(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  req.token = token;
+
+  if (!token) return res.sendStatus(401);
+
+  // DEBUG: Decode token without verification to see what's inside
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-      return res.status(401).json({
-        error: "Authorization header is required",
-        code: "UNAUTHORIZED",
-      });
+    const tokenParts = token.split(".");
+    if (tokenParts.length === 3) {
+      const payload = JSON.parse(
+        Buffer.from(tokenParts[1], "base64").toString()
+      );
+      console.log("🔍 TOKEN DEBUG:");
+      console.log("  - Token aud (audience/project):", payload.aud);
+      console.log("  - Token iss (issuer):", payload.iss);
+      console.log(
+        "  - Token exp (expires):",
+        new Date(payload.exp * 1000).toISOString()
+      );
+      console.log("  - Token uid:", payload.uid || payload.user_id);
+      console.log("  - Expected project: swipetube-3c5c6");
+      console.log(
+        "  - Token from correct project?",
+        payload.aud === "swipetube-3c5c6"
+      );
     }
-
-    // Extract token from "Bearer <token>" or just "<token>"
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : authHeader;
-
-    if (!token) {
-      return res.status(401).json({
-        error: "Invalid authorization token",
-        code: "UNAUTHORIZED",
-      });
-    }
-
-    // For now, we'll use the token as the user_id directly
-    // In production, decode JWT with Firebase Admin SDK:
-    // const decodedToken = await admin.auth().verifyIdToken(token);
-    // req.user = { uid: decodedToken.uid };
-
-    // Set all three to the same value: user_id = req.user.uid = firebase_id
-    req.user = { uid: token };
-    req.user_id = token;
-    req.firebase_id = token;
-
-    next();
-  } catch (error) {
-    console.error("❌ Authentication error:", error);
-    return res.status(401).json({
-      error: "Authentication failed",
-      details: error.message,
-      code: "UNAUTHORIZED",
-    });
+  } catch (e) {
+    console.log("❌ Could not decode token:", e.message);
   }
+
+  firebaseAuth
+    .verifyIdToken(token)
+    .then(async (decodedToken) => {
+      req.user = decodedToken;
+      req.user_id = decodedToken.uid;
+      req.firebase_id = decodedToken.uid;
+
+      next();
+    })
+    .catch((error) => {
+      console.log("❌ Token verification failed:", error.message);
+      res.sendStatus(403);
+    });
 }
 
 // ========================================
@@ -5522,6 +5571,14 @@ app.delete("/swiped-companies", authenticateUser, async (req, res) => {
 // Insert swiped brand(s) - supports single or array, with array of swipe_board_ids
 app.post("/swiped-brands", authenticateUser, async (req, res) => {
   try {
+    console.log("DEBUG: Full req object keys:", Object.keys(req));
+    console.log("DEBUG: req.user:", JSON.stringify(req.user, null, 2));
+    console.log("DEBUG: req.user.uid:", req.user?.uid);
+    console.log(
+      "DEBUG: req.headers.authorization:",
+      req.headers.authorization?.substring(0, 50) + "..."
+    );
+
     const firebase_id = req.user.uid; // Get from token
     const payload = req.body;
 
@@ -5571,9 +5628,9 @@ app.post("/swiped-brands", authenticateUser, async (req, res) => {
       format: "JSONEachRow",
     });
 
-    console.log(
-      `✅ Inserted ${brands.length} swiped brand(s) for user ${firebase_id}`
-    );
+    // console.log(
+    //   `✅ Inserted ${brands.length} swiped brand(s) for user ${firebase_id}`
+    // );
 
     res.json({
       success: true,
@@ -5706,6 +5763,17 @@ app.listen(PORT, async () => {
   console.log(`  POST /swiped-brands - Insert swiped brand(s)`);
   console.log(`  DELETE /swiped-brands - Delete swiped brand`);
   console.log(`VERSION 07082025`);
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("🛑 Received SIGTERM, shutting down gracefully");
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("🛑 Received SIGINT, shutting down gracefully");
+  process.exit(0);
 });
 
 // Graceful shutdown
