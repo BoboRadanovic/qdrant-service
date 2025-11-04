@@ -4770,7 +4770,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
     // Create a map of swiped companies for quick lookup
     const swipedCompaniesMap = new Map();
     swipedCompaniesData.forEach((item) => {
-      swipedCompaniesMap.set(item.company_id, item);
+      swipedCompaniesMap.set(String(item.company_id), item);
     });
 
     if (normalizedSearchTerm) {
@@ -4791,7 +4791,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Process all company IDs from the merged list
       companyIds.forEach((companyId) => {
         const clickhouseInfo = clickhouseMap.get(companyId);
-        const swipedInfo = swipedCompaniesMap.get(companyId);
+        const swipedInfo = swipedCompaniesMap.get(String(companyId));
         const qdrantResult = qdrantMap.get(companyId);
 
         // Only include companies that have ClickHouse data
@@ -4815,7 +4815,9 @@ app.post("/search/companies/enhanced", async (req, res) => {
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
       clickhouseData.forEach((clickhouseResult) => {
-        const swipedInfo = swipedCompaniesMap.get(clickhouseResult.company_id);
+        const swipedInfo = swipedCompaniesMap.get(
+          String(clickhouseResult.company_id)
+        );
 
         const enhancedResult = {
           companyId: clickhouseResult.company_id,
