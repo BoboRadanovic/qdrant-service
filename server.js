@@ -1949,103 +1949,69 @@ app.post("/search/videos/enhanced", async (req, res) => {
         let query;
         if (effectiveSortProp === "similarity_score") {
           // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
+          // Using argMax with HAVING to avoid ClickHouse bug with NOT IN + aggregation
           query = `
             SELECT 
               vs.yt_video_id,
-              vs.last_30,
-              vs.last_60,
-              vs.last_90,
-              vs.total,
-              vs.category_id,
-              vs.language,
-              vs.listed,
-              vs.duration,
-              vs.title,
-              vs.frame,
-              vs.brand_name,
-              vm.brand_id,
-              vs.published_at,
-              vs.updated_at
-            FROM (
-              SELECT 
-                yt_video_id,
-                last_30,
-                last_60,
-                last_90,
-                total,
-                category_id,
-                language,
-                listed,
-                duration,
-                title,
-                frame,
-                brand_name,
-                published_at,
-                updated_at,
-                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-              FROM analytics.yt_video_summary 
-              WHERE yt_video_id IN (${videoIdList})
-              AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
-            ) vs
+              argMax(vs.last_30, vs.updated_at) as last_30,
+              argMax(vs.last_60, vs.updated_at) as last_60,
+              argMax(vs.last_90, vs.updated_at) as last_90,
+              argMax(vs.total, vs.updated_at) as total,
+              argMax(vs.category_id, vs.updated_at) as category_id,
+              argMax(vs.language, vs.updated_at) as language,
+              argMax(vs.listed, vs.updated_at) as listed,
+              argMax(vs.duration, vs.updated_at) as duration,
+              argMax(vs.title, vs.updated_at) as title,
+              argMax(vs.frame, vs.updated_at) as frame,
+              argMax(vs.brand_name, vs.updated_at) as brand_name,
+              argMax(vs.published_at, vs.updated_at) as published_at,
+              max(vs.updated_at) as updated_at,
+              any(vm.brand_id) as brand_id
+            FROM analytics.yt_video_summary vs
             LEFT JOIN (
               SELECT 
                 yt_video_id,
-                brand_id,
-                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+                argMax(brand_id, date) as brand_id
               FROM analytics.yt_videos_metrics
               WHERE yt_video_id IN (${videoIdList})
-            ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
-            WHERE vs.rn = 1
+              GROUP BY yt_video_id
+            ) vm ON vs.yt_video_id = vm.yt_video_id
+            WHERE vs.yt_video_id IN (${videoIdList})
+            GROUP BY vs.yt_video_id
+            HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
+          // Using argMax with HAVING to avoid ClickHouse bug with NOT IN + aggregation
           query = `
             SELECT 
               vs.yt_video_id,
-              vs.last_30,
-              vs.last_60,
-              vs.last_90,
-              vs.total,
-              vs.category_id,
-              vs.language,
-              vs.listed,
-              vs.duration,
-              vs.title,
-              vs.frame,
-              vs.brand_name,
-              vm.brand_id,
-              vs.published_at,
-              vs.updated_at
-            FROM (
-              SELECT 
-                yt_video_id,
-                last_30,
-                last_60,
-                last_90,
-                total,
-                category_id,
-                language,
-                listed,
-                duration,
-                title,
-                frame,
-                brand_name,
-                published_at,
-                updated_at,
-                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-              FROM analytics.yt_video_summary 
-              WHERE yt_video_id IN (${videoIdList})
-              AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
-            ) vs
+              argMax(vs.last_30, vs.updated_at) as last_30,
+              argMax(vs.last_60, vs.updated_at) as last_60,
+              argMax(vs.last_90, vs.updated_at) as last_90,
+              argMax(vs.total, vs.updated_at) as total,
+              argMax(vs.category_id, vs.updated_at) as category_id,
+              argMax(vs.language, vs.updated_at) as language,
+              argMax(vs.listed, vs.updated_at) as listed,
+              argMax(vs.duration, vs.updated_at) as duration,
+              argMax(vs.title, vs.updated_at) as title,
+              argMax(vs.frame, vs.updated_at) as frame,
+              argMax(vs.brand_name, vs.updated_at) as brand_name,
+              argMax(vs.published_at, vs.updated_at) as published_at,
+              max(vs.updated_at) as updated_at,
+              any(vm.brand_id) as brand_id
+            FROM analytics.yt_video_summary vs
             LEFT JOIN (
               SELECT 
                 yt_video_id,
-                brand_id,
-                ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+                argMax(brand_id, date) as brand_id
               FROM analytics.yt_videos_metrics
               WHERE yt_video_id IN (${videoIdList})
-            ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
-            WHERE vs.rn = 1
+              GROUP BY yt_video_id
+            ) vm ON vs.yt_video_id = vm.yt_video_id
+            WHERE vs.yt_video_id IN (${videoIdList})
+            GROUP BY vs.yt_video_id
+            HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
           `;
         }
@@ -2059,10 +2025,18 @@ app.post("/search/videos/enhanced", async (req, res) => {
           );
         }
 
+        // Log full query for debugging
+        console.log(`📝 FULL QUERY:\n${query}`);
+
         try {
           const resultSet = await clickhouse.query({
             query: query,
             format: "JSONEachRow",
+            clickhouse_settings: {
+              // Fix for "Cannot read all data" error with aggregation queries
+              output_format_json_quote_64bit_integers: 0,
+              max_block_size: 65536,
+            },
           });
 
           const chunkData = await resultSet.json();
@@ -2077,6 +2051,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
             `❌ ClickHouse chunk ${chunkIndex + 1} failed:`,
             error.message
           );
+          console.error(`❌ Full error:`, error);
+          console.error(`❌ Error type:`, error.constructor.name);
+          console.error(`❌ FULL QUERY THAT FAILED:\n${query}`);
+          console.error(`❌ Video IDs count:`, chunk.length);
+          console.error(`❌ Sample video IDs:`, chunk.slice(0, 5));
           return [];
         }
       };
@@ -2137,18 +2116,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `📊 Starting direct ClickHouse search with filters at ${new Date().toISOString()}`
       );
 
-      // Build WHERE clause for filters
+      // Build WHERE clause for filters (non-aggregated fields only)
       const whereConditions = [];
-
-      // Category ID filter
-      if (
-        normalizedCategoryIds &&
-        Array.isArray(normalizedCategoryIds) &&
-        normalizedCategoryIds.length > 0
-      ) {
-        const categoryList = normalizedCategoryIds.join(", ");
-        whereConditions.push(`category_id IN (${categoryList})`);
-      }
 
       // Language filter
       if (language && typeof language === "string") {
@@ -2192,78 +2161,61 @@ app.post("/search/videos/enhanced", async (req, res) => {
         }
       }
 
-      // Category exclusion filter
-      whereConditions.push(
-        `total > 100 AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
-      );
+      // Total filter (keep in WHERE)
+      whereConditions.push(`total > 100`);
 
       const whereClause =
         whereConditions.length > 0
           ? `WHERE ${whereConditions.join(" AND ")}`
           : "";
 
-      // Optimize query: pre-filter top 1000 records before expensive deduplication
-      const preFilterLimit = 1000; // Take top 1000 records, then deduplicate and limit
+      // Build HAVING clause for category filter (must be after aggregation)
+      let havingClause;
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        // If specific categories requested, filter to only those
+        const categoryList = normalizedCategoryIds.join(", ");
+        havingClause = `HAVING category_id IN (${categoryList})`;
+      } else {
+        // Otherwise exclude the standard excluded categories
+        havingClause = `HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(
+          ", "
+        )})`;
+      }
 
+      // Simplified query without subquery to avoid ClickHouse bug
+      // Category filter moved to HAVING to avoid ClickHouse bug with category_id + aggregation
       const query = `
         SELECT 
           vs.yt_video_id,
-          vs.last_30,
-          vs.last_60,
-          vs.last_90,
-          vs.total,
-          vs.category_id,
-          vs.language,
-          vs.listed,
-          vs.duration,
-          vs.title,
-          vs.frame,
-          vs.brand_name,
-          vm.brand_id,
-          vs.published_at,
-          vs.updated_at
-        FROM (
-          SELECT 
-            yt_video_id,
-            last_30,
-            last_60,
-            last_90,
-            total,
-            category_id,
-            language,
-            listed,
-            duration,
-            title,
-            frame,
-            brand_name,
-            published_at,
-            updated_at,
-            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-          FROM (
-            SELECT *
-            FROM analytics.yt_video_summary 
-            ${whereClause}
-            ORDER BY ${order_by} ${order_direction.toUpperCase()}
-            LIMIT ${preFilterLimit}
-          ) top_records
-        ) vs
+          argMax(vs.last_30, vs.updated_at) as last_30,
+          argMax(vs.last_60, vs.updated_at) as last_60,
+          argMax(vs.last_90, vs.updated_at) as last_90,
+          argMax(vs.total, vs.updated_at) as total,
+          argMax(vs.category_id, vs.updated_at) as category_id,
+          argMax(vs.language, vs.updated_at) as language,
+          argMax(vs.listed, vs.updated_at) as listed,
+          argMax(vs.duration, vs.updated_at) as duration,
+          argMax(vs.title, vs.updated_at) as title,
+          argMax(vs.frame, vs.updated_at) as frame,
+          argMax(vs.brand_name, vs.updated_at) as brand_name,
+          argMax(vs.published_at, vs.updated_at) as published_at,
+          max(vs.updated_at) as updated_at,
+          any(vm.brand_id) as brand_id
+        FROM analytics.yt_video_summary vs
         LEFT JOIN (
           SELECT 
             yt_video_id,
-            brand_id,
-            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+            argMax(brand_id, date) as brand_id
           FROM analytics.yt_videos_metrics
-          WHERE yt_video_id IN (
-            SELECT yt_video_id FROM (
-              SELECT *
-              FROM analytics.yt_video_summary 
-              ${whereClause}
-              ORDER BY ${order_by} ${order_direction.toUpperCase()}
-              LIMIT ${preFilterLimit}
-            ) top_records
-          )
-        ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
-        WHERE vs.rn = 1
+          GROUP BY yt_video_id
+        ) vm ON vs.yt_video_id = vm.yt_video_id
+        ${whereClause}
+        GROUP BY vs.yt_video_id
+        ${havingClause}
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
@@ -2274,6 +2226,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
         const resultSet = await clickhouse.query({
           query: query,
           format: "JSONEachRow",
+          clickhouse_settings: {
+            // Fix for "Cannot read all data" error with aggregation queries
+            output_format_json_quote_64bit_integers: 0,
+            max_block_size: 65536,
+          },
         });
 
         clickhouseData = await resultSet.json();
@@ -2688,44 +2645,27 @@ app.post("/videos/summary", async (req, res) => {
       .join(", ");
 
     // Build the query with deduplication to ensure latest record per video
+    // Using argMax with HAVING to avoid ClickHouse bug with NOT IN + aggregation
     const query = `
       SELECT 
         yt_video_id,
-        last_30,
-        last_60,
-        last_90,
-        total,
-        category_id,
-        language,
-        listed,
-        duration,
-        title,
-        frame,
-        brand_name,
-        published_at,
-        updated_at
-      FROM (
-        SELECT 
-          yt_video_id,
-          last_30,
-          last_60,
-          last_90,
-          total,
-          category_id,
-          language,
-          listed,
-          duration,
-          title,
-          frame,
-          brand_name,
-          published_at,
-          updated_at,
-          ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-        FROM analytics.yt_video_summary 
-        WHERE yt_video_id IN (${videoIdList})
-        AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
-      ) ranked
-      WHERE rn = 1
+        argMax(last_30, updated_at) as last_30,
+        argMax(last_60, updated_at) as last_60,
+        argMax(last_90, updated_at) as last_90,
+        argMax(total, updated_at) as total,
+        argMax(category_id, updated_at) as category_id,
+        argMax(language, updated_at) as language,
+        argMax(listed, updated_at) as listed,
+        argMax(duration, updated_at) as duration,
+        argMax(title, updated_at) as title,
+        argMax(frame, updated_at) as frame,
+        argMax(brand_name, updated_at) as brand_name,
+        argMax(published_at, updated_at) as published_at,
+        max(updated_at) as updated_at
+      FROM analytics.yt_video_summary 
+      WHERE yt_video_id IN (${videoIdList})
+      GROUP BY yt_video_id
+      HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
       ORDER BY ${order_by} ${order_direction.toUpperCase()}
       LIMIT ${parseInt(limit)}
       OFFSET ${parseInt(offset)}
@@ -2739,6 +2679,11 @@ app.post("/videos/summary", async (req, res) => {
     const resultSet = await clickhouse.query({
       query: query,
       format: "JSONEachRow",
+      clickhouse_settings: {
+        // Fix for "Cannot read all data" error with aggregation queries
+        output_format_json_quote_64bit_integers: 0,
+        max_block_size: 65536,
+      },
     });
 
     const data = await resultSet.json();
@@ -3534,7 +3479,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         swipedBrandsData = await fetchSwipedBrands(brandIds, userId);
       }
 
-      // Note: Deduplication is now handled at SQL level using ROW_NUMBER() window function
+      // Note: Deduplication is handled at SQL level using argMax aggregate function
 
       clickhouseTime = performance.now() - clickhouseStartTime;
 
@@ -4601,7 +4546,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
           swipedCompaniesData = await fetchSwipedCompanies(companyIds, userId);
         }
 
-        // Note: Deduplication is now handled at SQL level using ROW_NUMBER() window function
+        // Note: Deduplication is handled at SQL level using argMax aggregate function
 
         clickhouseTime = performance.now() - clickhouseStartTime;
 
