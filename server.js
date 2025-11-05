@@ -2105,8 +2105,18 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `📊 Starting direct ClickHouse search with filters at ${new Date().toISOString()}`
       );
 
-      // Build WHERE clause for filters (non-aggregated fields only)
+      // Build WHERE clause for filters
       const whereConditions = [];
+
+      // Category ID filter
+      if (
+        normalizedCategoryIds &&
+        Array.isArray(normalizedCategoryIds) &&
+        normalizedCategoryIds.length > 0
+      ) {
+        const categoryList = normalizedCategoryIds.join(", ");
+        whereConditions.push(`category_id IN (${categoryList})`);
+      }
 
       // Language filter
       if (language && typeof language === "string") {
@@ -2150,61 +2160,78 @@ app.post("/search/videos/enhanced", async (req, res) => {
         }
       }
 
-      // Total filter (keep in WHERE)
-      whereConditions.push(`total > 100`);
+      // Category exclusion filter
+      whereConditions.push(
+        `total > 100 AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+      );
 
       const whereClause =
         whereConditions.length > 0
           ? `WHERE ${whereConditions.join(" AND ")}`
           : "";
 
-      // Build HAVING clause for category filter (must be after aggregation)
-      let havingClause;
-      if (
-        normalizedCategoryIds &&
-        Array.isArray(normalizedCategoryIds) &&
-        normalizedCategoryIds.length > 0
-      ) {
-        // If specific categories requested, filter to only those
-        const categoryList = normalizedCategoryIds.join(", ");
-        havingClause = `HAVING category_id IN (${categoryList})`;
-      } else {
-        // Otherwise exclude the standard excluded categories
-        havingClause = `HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(
-          ", "
-        )})`;
-      }
+      // Optimize query: pre-filter top 1000 records before expensive deduplication
+      const preFilterLimit = 1000; // Take top 1000 records, then deduplicate and limit
 
-      // Simplified query without subquery to avoid ClickHouse bug
-      // Category filter moved to HAVING to avoid ClickHouse bug with category_id + aggregation
       const query = `
         SELECT 
           vs.yt_video_id,
-          argMax(vs.last_30, vs.updated_at) as last_30,
-          argMax(vs.last_60, vs.updated_at) as last_60,
-          argMax(vs.last_90, vs.updated_at) as last_90,
-          argMax(vs.total, vs.updated_at) as total,
-          argMax(vs.category_id, vs.updated_at) as category_id,
-          argMax(vs.language, vs.updated_at) as language,
-          argMax(vs.listed, vs.updated_at) as listed,
-          argMax(vs.duration, vs.updated_at) as duration,
-          argMax(vs.title, vs.updated_at) as title,
-          argMax(vs.frame, vs.updated_at) as frame,
-          argMax(vs.brand_name, vs.updated_at) as brand_name,
-          argMax(vs.published_at, vs.updated_at) as published_at,
-          max(vs.updated_at) as updated_at,
-          any(vm.brand_id) as brand_id
-        FROM analytics.yt_video_summary vs
+          vs.last_30,
+          vs.last_60,
+          vs.last_90,
+          vs.total,
+          vs.category_id,
+          vs.language,
+          vs.listed,
+          vs.duration,
+          vs.title,
+          vs.frame,
+          vs.brand_name,
+          vm.brand_id,
+          vs.published_at,
+          vs.updated_at
+        FROM (
+          SELECT 
+            yt_video_id,
+            last_30,
+            last_60,
+            last_90,
+            total,
+            category_id,
+            language,
+            listed,
+            duration,
+            title,
+            frame,
+            brand_name,
+            published_at,
+            updated_at,
+            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
+          FROM (
+            SELECT *
+            FROM analytics.yt_video_summary 
+            ${whereClause}
+            ORDER BY ${order_by} ${order_direction.toUpperCase()}
+            LIMIT ${preFilterLimit}
+          ) top_records
+        ) vs
         LEFT JOIN (
           SELECT 
             yt_video_id,
-            argMax(brand_id, date) as brand_id
+            brand_id,
+            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
           FROM analytics.yt_videos_metrics
-          GROUP BY yt_video_id
-        ) vm ON vs.yt_video_id = vm.yt_video_id
-        ${whereClause}
-        GROUP BY vs.yt_video_id
-        ${havingClause}
+          WHERE yt_video_id IN (
+            SELECT yt_video_id FROM (
+              SELECT *
+              FROM analytics.yt_video_summary 
+              ${whereClause}
+              ORDER BY ${order_by} ${order_direction.toUpperCase()}
+              LIMIT ${preFilterLimit}
+            ) top_records
+          )
+        ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
+        WHERE vs.rn = 1
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
         LIMIT ${parseInt(limit)}
       `;
