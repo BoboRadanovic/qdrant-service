@@ -2025,18 +2025,10 @@ app.post("/search/videos/enhanced", async (req, res) => {
           );
         }
 
-        // Log full query for debugging
-        console.log(`📝 FULL QUERY:\n${query}`);
-
         try {
           const resultSet = await clickhouse.query({
             query: query,
             format: "JSONEachRow",
-            clickhouse_settings: {
-              // Fix for "Cannot read all data" error with aggregation queries
-              output_format_json_quote_64bit_integers: 0,
-              max_block_size: 65536,
-            },
           });
 
           const chunkData = await resultSet.json();
@@ -2051,9 +2043,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
             `❌ ClickHouse chunk ${chunkIndex + 1} failed:`,
             error.message
           );
-          console.error(`❌ Full error:`, error);
-          console.error(`❌ Error type:`, error.constructor.name);
-          console.error(`❌ FULL QUERY THAT FAILED:\n${query}`);
           console.error(`❌ Video IDs count:`, chunk.length);
           console.error(`❌ Sample video IDs:`, chunk.slice(0, 5));
           return [];
@@ -2226,11 +2215,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
         const resultSet = await clickhouse.query({
           query: query,
           format: "JSONEachRow",
-          clickhouse_settings: {
-            // Fix for "Cannot read all data" error with aggregation queries
-            output_format_json_quote_64bit_integers: 0,
-            max_block_size: 65536,
-          },
         });
 
         clickhouseData = await resultSet.json();
@@ -2679,11 +2663,6 @@ app.post("/videos/summary", async (req, res) => {
     const resultSet = await clickhouse.query({
       query: query,
       format: "JSONEachRow",
-      clickhouse_settings: {
-        // Fix for "Cannot read all data" error with aggregation queries
-        output_format_json_quote_64bit_integers: 0,
-        max_block_size: 65536,
-      },
     });
 
     const data = await resultSet.json();
