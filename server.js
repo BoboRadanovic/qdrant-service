@@ -267,6 +267,7 @@ async function fetchExternalVideoIds({
   token,
   dateFrom,
   dateTo,
+  orientation,
 }) {
   try {
     // Convert categoryIds=[0] to empty array
@@ -287,6 +288,7 @@ async function fetchExternalVideoIds({
       limit: limit || 200,
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
+      orientation: orientation || 0,
     };
     //console.log("payload", payload);
     // Remove undefined/null keys
@@ -472,6 +474,30 @@ async function fetchSwipedCompanies(companyIds, userId) {
     return [];
   }
 }
+
+const collapseOrientations = (orientations) => {
+  if (!Array.isArray(orientations) || orientations.length === 0) {
+    return 0;
+  }
+
+  const numericValues = orientations
+    .map((code) => Number(code))
+    .filter((code) => Number.isFinite(code));
+
+  const nonZeroValues = numericValues.filter((code) => code > 0);
+
+  if (nonZeroValues.length === 0) {
+    return 0;
+  }
+
+  const uniqueNonZero = [...new Set(nonZeroValues)];
+
+  if (uniqueNonZero.length === 1) {
+    return uniqueNonZero[0];
+  }
+
+  return 3;
+};
 
 // Initialize Express app
 const app = express();
@@ -901,6 +927,7 @@ app.post("/search/videos/filtered", async (req, res) => {
       is_unlisted = null,
       duration_min = null,
       duration_max = null,
+      orientation = 0,
     } = req.body;
 
     // Validate required fields
@@ -966,6 +993,16 @@ app.post("/search/videos/filtered", async (req, res) => {
       filters.must.push(durationFilter);
     }
 
+    // Orientation filter: only filter if orientation is 1 or 2
+    // Orientation 3 represents multiple values, so include it in both cases
+    const orientationFilter = Number(orientation);
+    if (orientationFilter === 1 || orientationFilter === 2) {
+      filters.must.push({
+        key: "orientation",
+        match: { any: [orientationFilter, 3] },
+      });
+    }
+
     // Search in Qdrant
     const searchBody = {
       vector: embedding,
@@ -1004,6 +1041,7 @@ app.post("/search/videos/filtered", async (req, res) => {
         language: result.payload?.language,
         is_unlisted: result.payload?.unlisted,
         duration: result.payload?.duration,
+        orientation: result.payload?.orientation,
       }));
 
     console.log(
@@ -1482,6 +1520,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
       dateFrom = null, // New parameter for date range filtering
       dateTo = null, // New parameter for date range filtering
+      orientation = 0,
     } = req.body;
     console.log("showVideos", showVideos);
     // Get user_id from authentication middleware
@@ -1513,6 +1552,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
     // Convert sortProp "date" to "publishedAt"
     const finalSortProp =
       normalizedSortProp === "date" ? "publishedAt" : normalizedSortProp;
+
+    // Orientation filter: 1 or 2 for specific orientation, otherwise 0 (no filter)
+    const rawOrientation = Number(orientation);
+    const orientationFilter =
+      rawOrientation === 1 || rawOrientation === 2 ? rawOrientation : 0;
 
     // Validate searchTerm if provided
     if (
@@ -1581,6 +1625,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       userId: userId ? "provided" : "none",
       dateFrom,
       dateTo,
+      orientation: orientationFilter,
     });
 
     // Determine default sortProp based on context
@@ -1682,6 +1727,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           token,
           dateFrom,
           dateTo,
+          orientation: orientationFilter,
         };
 
         console.log(
@@ -1749,6 +1795,15 @@ app.post("/search/videos/enhanced", async (req, res) => {
         if (dateFilter.range.gte || dateFilter.range.lte) {
           filters.must.push(dateFilter);
         }
+      }
+
+      // Orientation filter for Qdrant: only filter if orientation is 1 or 2
+      // Orientation 3 represents multiple values, so include it in both cases
+      if (orientationFilter === 1 || orientationFilter === 2) {
+        filters.must.push({
+          key: "orientation",
+          match: { any: [orientationFilter, 3] },
+        });
       }
 
       // Step 3: Wait for embedding to be ready, then start Qdrant search immediately
@@ -1883,12 +1938,25 @@ app.post("/search/videos/enhanced", async (req, res) => {
     // Function to fetch swiped videos data
     async function fetchSwipedVideos(videoIds, userId) {
       //console.log("fetchSwipedVideos", videoIds, userId);
-      if (!userId || !videoIds || videoIds.length === 0) {
+      if (
+        !userId ||
+        typeof userId !== "string" ||
+        !videoIds ||
+        videoIds.length === 0
+      ) {
         return [];
       }
 
       try {
-        const videoIdList = videoIds
+        // Filter out any undefined/null video IDs and ensure they're strings
+        const validVideoIds = videoIds.filter(
+          (id) => id && typeof id === "string"
+        );
+        if (validVideoIds.length === 0) {
+          return [];
+        }
+
+        const videoIdList = validVideoIds
           .map((id) => `'${id.replace(/'/g, "''")}'`)
           .join(", ");
 
@@ -1912,6 +1980,47 @@ app.post("/search/videos/enhanced", async (req, res) => {
         return data;
       } catch (error) {
         console.error("❌ Swiped videos query failed:", error.message);
+        return [];
+      }
+    }
+
+    // Function to fetch video orientations data
+    async function fetchVideoOrientations(videoIds) {
+      if (!videoIds || videoIds.length === 0) {
+        return [];
+      }
+
+      try {
+        // Filter out any undefined/null video IDs and ensure they're strings
+        const validVideoIds = videoIds.filter(
+          (id) => id && typeof id === "string"
+        );
+        if (validVideoIds.length === 0) {
+          return [];
+        }
+
+        const videoIdList = validVideoIds
+          .map((id) => `'${id.replace(/'/g, "''")}'`)
+          .join(", ");
+
+        const orientationQuery = `
+          SELECT 
+            yt_video_id,
+            groupArray(orientation) AS orientations
+          FROM analytics.video_company_relations
+          WHERE yt_video_id IN (${videoIdList})
+          GROUP BY yt_video_id
+        `;
+
+        const resultSet = await clickhouse.query({
+          query: orientationQuery,
+          format: "JSONEachRow",
+        });
+
+        const data = await resultSet.json();
+        return data;
+      } catch (error) {
+        console.error("❌ Orientation query failed:", error.message);
         return [];
       }
     }
@@ -2079,13 +2188,44 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `🔍 Merged ${chunkResults.length} chunks into ${clickhouseData.length} total records`
       );
 
-      // Execute swiped videos query in parallel if userId is provided
+      // Fetch swiped videos and orientations in parallel
+      const parallelQueries = [];
+
       if (userId) {
-        console.log(
-          `🔄 Executing swiped videos query in parallel with ClickHouse chunks`
-        );
-        swipedVideosData = await fetchSwipedVideos(videoIds, userId);
+        console.log(`🔄 Fetching swiped videos data`);
+        parallelQueries.push(fetchSwipedVideos(videoIds, userId));
+      } else {
+        parallelQueries.push(Promise.resolve([]));
       }
+
+      console.log(`🔄 Fetching orientation data for ${videoIds.length} videos`);
+      parallelQueries.push(fetchVideoOrientations(videoIds));
+
+      const [swipedData, orientationData] = await Promise.all(parallelQueries);
+      swipedVideosData = swipedData;
+
+      // Create orientation map and process
+      const orientationMap = new Map();
+      orientationData.forEach((item) => {
+        const orientationValues = Array.isArray(item.orientations)
+          ? item.orientations
+          : item.orientations !== undefined && item.orientations !== null
+          ? [item.orientations]
+          : [];
+
+        const numericValues = orientationValues
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value));
+
+        const orientation = collapseOrientations(numericValues);
+        orientationMap.set(item.yt_video_id, orientation);
+      });
+
+      // Attach orientation to clickhouse data
+      clickhouseData = clickhouseData.map((row) => ({
+        ...row,
+        orientation: orientationMap.get(row.yt_video_id) || 0,
+      }));
 
       clickhouseTime = performance.now() - clickhouseStartTime;
 
@@ -2093,6 +2233,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `✅ ClickHouse query completed in ${clickhouseTime.toFixed(
           2
         )}ms, returned ${clickhouseData.length} records`
+      );
+      console.log(
+        `✅ Orientation data fetched for ${orientationData.length} videos`
       );
       if (userId) {
         console.log(
@@ -2160,6 +2303,14 @@ app.post("/search/videos/enhanced", async (req, res) => {
         }
       }
 
+      if (orientationFilter > 0) {
+        whereConditions.push(`yt_video_id IN (
+          SELECT DISTINCT yt_video_id
+          FROM analytics.video_company_relations
+          WHERE orientation IN (${orientationFilter}, 3)
+        )`);
+      }
+
       // Category exclusion filter
       whereConditions.push(
         `total > 100 AND category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
@@ -2174,23 +2325,14 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const preFilterLimit = 1000; // Take top 1000 records, then deduplicate and limit
 
       const query = `
-        SELECT 
-          vs.yt_video_id,
-          vs.last_30,
-          vs.last_60,
-          vs.last_90,
-          vs.total,
-          vs.category_id,
-          vs.language,
-          vs.listed,
-          vs.duration,
-          vs.title,
-          vs.frame,
-          vs.brand_name,
-          vm.brand_id,
-          vs.published_at,
-          vs.updated_at
-        FROM (
+        WITH top_records AS (
+          SELECT *
+          FROM analytics.yt_video_summary 
+          ${whereClause}
+          ORDER BY ${order_by} ${order_direction.toUpperCase()}
+          LIMIT ${preFilterLimit}
+        ),
+        deduplicated_videos AS (
           SELECT 
             yt_video_id,
             last_30,
@@ -2207,35 +2349,66 @@ app.post("/search/videos/enhanced", async (req, res) => {
             published_at,
             updated_at,
             ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-          FROM (
-            SELECT *
-            FROM analytics.yt_video_summary 
-            ${whereClause}
-            ORDER BY ${order_by} ${order_direction.toUpperCase()}
-            LIMIT ${preFilterLimit}
-          ) top_records
-        ) vs
+          FROM top_records
+        ),
+        final_videos AS (
+          SELECT 
+            yt_video_id,
+            last_30,
+            last_60,
+            last_90,
+            total,
+            category_id,
+            language,
+            listed,
+            duration,
+            title,
+            frame,
+            brand_name,
+            published_at,
+            updated_at
+          FROM deduplicated_videos
+          WHERE rn = 1
+          ORDER BY ${order_by} ${order_direction.toUpperCase()}
+          LIMIT ${parseInt(limit)}
+        )
+        SELECT 
+          fv.yt_video_id,
+          fv.last_30,
+          fv.last_60,
+          fv.last_90,
+          fv.total,
+          fv.category_id,
+          fv.language,
+          fv.listed,
+          fv.duration,
+          fv.title,
+          fv.frame,
+          fv.brand_name,
+          vm.brand_id,
+          fv.published_at,
+          fv.updated_at,
+          vcr.orientations
+        FROM final_videos fv
         LEFT JOIN (
           SELECT 
             yt_video_id,
             brand_id,
             ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
           FROM analytics.yt_videos_metrics
-          WHERE yt_video_id IN (
-            SELECT yt_video_id FROM (
-              SELECT *
-              FROM analytics.yt_video_summary 
-              ${whereClause}
-              ORDER BY ${order_by} ${order_direction.toUpperCase()}
-              LIMIT ${preFilterLimit}
-            ) top_records
-          )
-        ) vm ON vs.yt_video_id = vm.yt_video_id AND vm.rn = 1
-        WHERE vs.rn = 1
+          WHERE yt_video_id IN (SELECT yt_video_id FROM final_videos)
+        ) vm ON fv.yt_video_id = vm.yt_video_id AND vm.rn = 1
+        LEFT JOIN (
+          SELECT 
+            yt_video_id,
+            groupArray(orientation) AS orientations
+          FROM analytics.video_company_relations
+          WHERE yt_video_id IN (SELECT yt_video_id FROM final_videos)
+          GROUP BY yt_video_id
+        ) vcr ON fv.yt_video_id = vcr.yt_video_id
         ORDER BY ${order_by} ${order_direction.toUpperCase()}
-        LIMIT ${parseInt(limit)}
       `;
-
+      console.log("query", query);
       console.log(`📊 Executing direct ClickHouse query with filters`);
 
       try {
@@ -2244,14 +2417,34 @@ app.post("/search/videos/enhanced", async (req, res) => {
           format: "JSONEachRow",
         });
 
-        clickhouseData = await resultSet.json();
+        const rawData = await resultSet.json();
         clickhouseTime = performance.now() - clickhouseStartTime;
 
         console.log(
           `✅ ClickHouse returned ${
-            clickhouseData.length
+            rawData.length
           } records in ${clickhouseTime.toFixed(2)}ms`
         );
+
+        clickhouseData = rawData.map((row) => {
+          const orientationValues = Array.isArray(row.orientations)
+            ? row.orientations
+            : row.orientations !== undefined && row.orientations !== null
+            ? [row.orientations]
+            : [];
+
+          const numericValues = orientationValues
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value));
+
+          const orientation = collapseOrientations(numericValues);
+          const { orientations, ...rest } = row;
+
+          return {
+            ...rest,
+            orientation,
+          };
+        });
 
         // If userId is provided, fetch swiped videos data for the returned video IDs
         if (userId && clickhouseData.length > 0) {
@@ -2318,6 +2511,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
                   language: qdrantResult.payload?.language,
                   is_unlisted: qdrantResult.payload?.unlisted,
                   duration: qdrantResult.payload?.duration,
+                  orientation: qdrantResult.payload?.orientation,
                 }
               : null,
             // ClickHouse summary data
@@ -2431,6 +2625,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           isSwiped: isSwiped, // Set based on swiped_videos table
           title: r.summary_data?.title || r.qdrant_data?.title || null,
           duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
+          orientation: r.summary_data?.orientation ?? 0,
           description: null, // Not available in current data structure
           thumbnail: r.summary_data?.frame || null,
           publishedAt: r.summary_data?.published_at
@@ -2487,6 +2682,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
             from: dateFrom,
             to: dateTo,
           },
+          orientation: orientationFilter,
         },
         search_term_analysis: normalizedSearchTerm
           ? {
@@ -2890,7 +3086,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       durationLessThen = null,
       sortProp = "totalSpend",
       orderAsc = false,
-      similarityThreshold = 0.4,
+      similarityThreshold = 0.3,
     } = req.body;
     // Fire-and-forget: store search history without blocking the response
     axios
