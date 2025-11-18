@@ -255,14 +255,112 @@ async function createEmbedding(text, dimensions = 1536) {
   }
 }
 
+// Helper function to build ClickHouse WHERE condition for duration ranges
+// Input: durationRanges = [[0, 30], [60, 120], [600, null]] or null/undefined
+// Returns: SQL condition string like "(duration >= 0 AND duration <= 30) OR (duration >= 60 AND duration <= 120) OR (duration >= 600)"
+// Returns: null if no ranges provided
+function buildClickHouseDurationFilter(durationRanges, fieldName = "duration") {
+  if (
+    !durationRanges ||
+    !Array.isArray(durationRanges) ||
+    durationRanges.length === 0
+  ) {
+    return null;
+  }
+
+  const conditions = durationRanges
+    .filter(
+      (range) =>
+        Array.isArray(range) && range.length > 0 && typeof range[0] === "number"
+    )
+    .map((range) => {
+      const min = range[0];
+      const max = range.length > 1 ? range[1] : null;
+
+      if (max === null) {
+        // Open-ended range: [600, null] -> duration >= 600
+        return `${fieldName} >= ${min}`;
+      } else {
+        // Closed range: [0, 30] -> duration >= 0 AND duration <= 30
+        return `(${fieldName} >= ${min} AND ${fieldName} <= ${max})`;
+      }
+    });
+
+  if (conditions.length === 0) {
+    return null;
+  }
+
+  // If only one condition, return it without OR wrapper
+  if (conditions.length === 1) {
+    return conditions[0];
+  }
+
+  // Multiple conditions: wrap in parentheses with OR
+  return `(${conditions.join(" OR ")})`;
+}
+
+// Helper function to build Qdrant filter for duration ranges
+// Input: durationRanges = [[0, 30], [60, 120], [600, null]] or null/undefined
+// Returns: Object with filter structure, or null if no ranges
+// For single range: returns filter object to push to filters.must
+// For multiple ranges: returns { should: [...] } to add at filters root level (filters.should)
+function buildQdrantDurationFilter(durationRanges, fieldName = "duration") {
+  if (
+    !durationRanges ||
+    !Array.isArray(durationRanges) ||
+    durationRanges.length === 0
+  ) {
+    return null;
+  }
+
+  const rangeFilters = durationRanges
+    .filter(
+      (range) =>
+        Array.isArray(range) && range.length > 0 && typeof range[0] === "number"
+    )
+    .map((range) => {
+      const min = range[0];
+      const max = range.length > 1 ? range[1] : null;
+
+      const rangeFilter = { key: fieldName, range: {} };
+
+      if (min !== null && typeof min === "number") {
+        rangeFilter.range.gte = min;
+      }
+
+      if (max !== null && typeof max === "number") {
+        rangeFilter.range.lte = max;
+      }
+      // If max is null, it's open-ended (only gte is set)
+
+      return rangeFilter;
+    });
+
+  if (rangeFilters.length === 0) {
+    return null;
+  }
+
+  // If only one range, return it as a filter object to push to must
+  if (rangeFilters.length === 1) {
+    return rangeFilters[0];
+  }
+
+  // Multiple ranges: return structure to merge into filters (should clause)
+  // Note: should clause defaults to matching at least one condition, so min_should is not needed
+  return {
+    should: rangeFilters,
+  };
+}
+
 // Helper to call external /api/videosPublic/search-ids service
 async function fetchExternalVideoIds({
   searchTerm,
   categoryIds,
   languageId,
   showVideos,
-  durationMoreThen,
-  durationLessThen,
+  durationRanges = null, // New: Array of ranges: [[0, 30], [60, 120], [600, null]]
+  durationMoreThen = null, // Legacy: kept for backward compatibility
+  durationLessThen = null, // Legacy: kept for backward compatibility
   limit,
   token,
   dateFrom,
@@ -283,13 +381,26 @@ async function fetchExternalVideoIds({
       categoryIds: normalizedCategoryIds,
       language: languageId || null,
       showVideos, // Pass videoStatus directly (can be "all", "public", "unlisted", or null)
-      durationMoreThen: durationMoreThen || null,
-      durationLessThen: durationLessThen || null,
       limit: limit || 200,
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
       orientation: orientation || 0,
     };
+
+    // Forward durationRanges if provided, otherwise fall back to legacy parameters
+    if (
+      durationRanges &&
+      Array.isArray(durationRanges) &&
+      durationRanges.length > 0
+    ) {
+      payload.durationRanges = durationRanges;
+    } else {
+      // Legacy format: only include if at least one is provided
+      if (durationMoreThen !== null || durationLessThen !== null) {
+        payload.durationMoreThen = durationMoreThen || null;
+        payload.durationLessThen = durationLessThen || null;
+      }
+    }
     //console.log("payload", payload);
     // Remove undefined/null keys
     Object.keys(payload).forEach(
@@ -1513,8 +1624,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
       categoryIds = null,
       language = null,
       showVideos = "all", // 'all', 'public', 'unlisted'
-      durationMoreThen = null,
-      durationLessThen = null,
+      durationRanges = null, // New: Array of ranges: [[0, 30], [60, 120], [600, null]]
+      durationMoreThen = null, // Legacy: kept for backward compatibility
+      durationLessThen = null, // Legacy: kept for backward compatibility
       sortProp = null, // Will default based on context
       orderAsc = false, // true = asc, false = desc
       similarityThreshold = 0.4, // Minimum similarity score (0.0 - 1.0)
@@ -1721,8 +1833,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
           categoryIds,
           language,
           showVideos: showVideos, // "all", "public", "unlisted", or null
-          durationMoreThen,
-          durationLessThen,
+          durationRanges, // Forward new format if provided
+          durationMoreThen, // Legacy: kept for backward compatibility
+          durationLessThen, // Legacy: kept for backward compatibility
           limit,
           token,
           dateFrom,
@@ -1764,7 +1877,30 @@ app.post("/search/videos/enhanced", async (req, res) => {
           filters.must.push({ key: "unlisted", match: { value: true } });
         }
       }
-      if (durationMoreThen !== null || durationLessThen !== null) {
+      // Duration filter: use new durationRanges if provided, otherwise fall back to legacy parameters
+      if (
+        durationRanges &&
+        Array.isArray(durationRanges) &&
+        durationRanges.length > 0
+      ) {
+        // New format: multiple ranges support
+        const durationFilter = buildQdrantDurationFilter(
+          durationRanges,
+          "duration"
+        );
+        if (durationFilter) {
+          // If single range, push to must. If multiple ranges, add should clause at filter root level
+          if (durationFilter.should) {
+            // Multiple ranges: add should clause at the same level as must (not nested inside must)
+            // should clause defaults to matching at least one condition
+            filters.should = durationFilter.should;
+          } else {
+            // Single range: push to must
+            filters.must.push(durationFilter);
+          }
+        }
+      } else if (durationMoreThen !== null || durationLessThen !== null) {
+        // Legacy format: single range
         const durationFilter = { key: "duration", range: {} };
         if (durationMoreThen !== null && typeof durationMoreThen === "number") {
           durationFilter.range.gte = durationMoreThen;
@@ -1823,7 +1959,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         params: { hnsw_ef: 32 },
       };
 
-      if (filters.must.length > 0) {
+      // Add filter if we have any must clauses or should clauses
+      if (filters.must.length > 0 || filters.should) {
         searchBody.filter = filters;
       }
       console.log(
@@ -2043,7 +2180,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       };
 
       // Split video IDs into chunks of 5000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 5000;
+      const CHUNK_SIZE = 1000;
       const videoIdChunks = chunkArray(videoIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${videoIds.length} video IDs into ${videoIdChunks.length} chunks of ${CHUNK_SIZE}`
@@ -2163,7 +2300,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `🔄 Executing ${videoIdChunks.length} ClickHouse chunks with controlled concurrency`
       );
 
-      const CONCURRENT_CHUNKS = 10;
+      const CONCURRENT_CHUNKS = 3;
       const chunkResults = [];
 
       for (let i = 0; i < videoIdChunks.length; i += CONCURRENT_CHUNKS) {
@@ -2277,12 +2414,29 @@ app.post("/search/videos/enhanced", async (req, res) => {
         }
       }
 
-      // Duration range filter
-      if (durationMoreThen !== null && typeof durationMoreThen === "number") {
-        whereConditions.push(`duration >= ${durationMoreThen}`);
-      }
-      if (durationLessThen !== null && typeof durationLessThen === "number") {
-        whereConditions.push(`duration <= ${durationLessThen}`);
+      // Duration filter: use new durationRanges if provided, otherwise fall back to legacy parameters
+      if (
+        durationRanges &&
+        Array.isArray(durationRanges) &&
+        durationRanges.length > 0
+      ) {
+        // New format: multiple ranges support
+        const durationCondition = buildClickHouseDurationFilter(
+          durationRanges,
+          "duration"
+        );
+        if (durationCondition) {
+          console.log("durationCondition", durationCondition);
+          whereConditions.push(durationCondition);
+        }
+      } else {
+        // Legacy format: single range
+        if (durationMoreThen !== null && typeof durationMoreThen === "number") {
+          whereConditions.push(`duration >= ${durationMoreThen}`);
+        }
+        if (durationLessThen !== null && typeof durationLessThen === "number") {
+          whereConditions.push(`duration <= ${durationLessThen}`);
+        }
       }
 
       // Date range filter
@@ -2749,6 +2903,13 @@ app.post("/search/videos/enhanced", async (req, res) => {
       `❌ Enhanced search error (after ${totalTime.toFixed(2)}ms):`,
       error.message
     );
+    // Log Qdrant error details if available
+    if (error.response?.data) {
+      console.error(
+        "❌ Qdrant error details:",
+        JSON.stringify(error.response.data, null, 2)
+      );
+    }
     console.error(`🚨 Error occurred at ${new Date().toISOString()}`);
 
     // Handle specific error types
