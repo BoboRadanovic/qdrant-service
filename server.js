@@ -2180,7 +2180,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       };
 
       // Split video IDs into chunks of 5000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 1000;
+      const CHUNK_SIZE = 500;
       const videoIdChunks = chunkArray(videoIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${videoIds.length} video IDs into ${videoIdChunks.length} chunks of ${CHUNK_SIZE}`
@@ -2300,7 +2300,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `🔄 Executing ${videoIdChunks.length} ClickHouse chunks with controlled concurrency`
       );
 
-      const CONCURRENT_CHUNKS = 3;
+      const CONCURRENT_CHUNKS = 2;
       const chunkResults = [];
 
       for (let i = 0; i < videoIdChunks.length; i += CONCURRENT_CHUNKS) {
