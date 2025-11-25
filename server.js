@@ -2479,88 +2479,78 @@ app.post("/search/videos/enhanced", async (req, res) => {
       const preFilterLimit = 1000; // Take top 1000 records, then deduplicate and limit
 
       const query = `
-        WITH top_records AS (
-          SELECT *
-          FROM analytics.yt_video_summary 
-          ${whereClause}
-          ORDER BY ${order_by} ${order_direction.toUpperCase()}
-          LIMIT ${preFilterLimit}
-        ),
-        deduplicated_videos AS (
-          SELECT 
-            yt_video_id,
-            last_30,
-            last_60,
-            last_90,
-            total,
-            category_id,
-            language,
-            listed,
-            duration,
-            title,
-            frame,
-            brand_name,
-            published_at,
-            updated_at,
-            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY updated_at DESC) as rn
-          FROM top_records
-        ),
-        final_videos AS (
-          SELECT 
-            yt_video_id,
-            last_30,
-            last_60,
-            last_90,
-            total,
-            category_id,
-            language,
-            listed,
-            duration,
-            title,
-            frame,
-            brand_name,
-            published_at,
-            updated_at
-          FROM deduplicated_videos
+        WITH latest_records AS (
+          SELECT
+              yt_video_id,
+              last_30,
+              last_60,
+              last_90,
+              total,
+              category_id,
+              language,
+              listed,
+              duration,
+              title,
+              frame,
+              brand_name,
+              published_at,
+              updated_at
+          FROM (
+              SELECT *,
+                  ROW_NUMBER() OVER (
+                      PARTITION BY yt_video_id
+                      ORDER BY updated_at DESC
+                  ) AS rn
+              FROM analytics.yt_video_summary
+              ${whereClause}
+          )
           WHERE rn = 1
-          ORDER BY ${order_by} ${order_direction.toUpperCase()}
-          LIMIT ${parseInt(limit)}
-        )
-        SELECT 
-          fv.yt_video_id as yt_video_id,
-          fv.last_30,
-          fv.last_60,
-          fv.last_90,
-          fv.total,
-          fv.category_id,
-          fv.language,
-          fv.listed,
-          fv.duration,
-          fv.title,
-          fv.frame,
-          fv.brand_name,
+      ),
+      top_videos AS (
+          SELECT *
+          FROM latest_records
+          ORDER BY ${order_by} ${order_direction}
+          LIMIT ${limit}
+      )
+      SELECT
+          tv.yt_video_id,
+          tv.last_30,
+          tv.last_60,
+          tv.last_90,
+          tv.total,
+          tv.category_id,
+          tv.language,
+          tv.listed,
+          tv.duration,
+          tv.title,
+          tv.frame,
+          tv.brand_name,
           vm.brand_id,
-          fv.published_at,
-          fv.updated_at,
+          tv.published_at,
+          tv.updated_at,
           vcr.orientations
-        FROM final_videos fv
-        LEFT JOIN (
-          SELECT 
-            yt_video_id,
-            brand_id,
-            ROW_NUMBER() OVER (PARTITION BY yt_video_id ORDER BY date DESC) as rn
+      FROM top_videos tv
+      LEFT JOIN (
+          SELECT
+              yt_video_id,
+              brand_id,
+              ROW_NUMBER() OVER (
+                  PARTITION BY yt_video_id
+                  ORDER BY date DESC
+              ) AS rn
           FROM analytics.yt_videos_metrics
-          WHERE yt_video_id IN (SELECT yt_video_id FROM final_videos)
-        ) vm ON fv.yt_video_id = vm.yt_video_id AND vm.rn = 1
-        LEFT JOIN (
-          SELECT 
-            yt_video_id,
-            groupArray(orientation) AS orientations
+          WHERE yt_video_id IN (SELECT yt_video_id FROM top_videos)
+      ) vm ON tv.yt_video_id = vm.yt_video_id AND vm.rn = 1
+      LEFT JOIN (
+          SELECT
+              yt_video_id,
+              groupArray(orientation) AS orientations
           FROM analytics.video_company_relations
-          WHERE yt_video_id IN (SELECT yt_video_id FROM final_videos)
+          WHERE yt_video_id IN (SELECT yt_video_id FROM top_videos)
           GROUP BY yt_video_id
-        ) vcr ON fv.yt_video_id = vcr.yt_video_id
-        ORDER BY ${order_by} ${order_direction.toUpperCase()}
+      ) vcr ON tv.yt_video_id = vcr.yt_video_id
+      ORDER BY ${order_by} ${order_direction}
+
       `;
       console.log("query", query);
       console.log(`📊 Executing direct ClickHouse query with filters`);
