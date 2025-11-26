@@ -3659,7 +3659,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
       };
 
       // Split brand IDs into chunks of 5000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 5000;
+      const CHUNK_SIZE = 500;
       const brandIdChunks = chunkArray(brandIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${brandIds.length} brand IDs into ${brandIdChunks.length} chunks of ${CHUNK_SIZE}`
