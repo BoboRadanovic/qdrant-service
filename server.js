@@ -2513,7 +2513,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
           LIMIT ${limit}
       )
       SELECT
-          tv.yt_video_id,
+          tv.yt_video_id as yt_video_id,
           tv.last_30,
           tv.last_60,
           tv.last_90,
