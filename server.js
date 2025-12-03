@@ -2180,7 +2180,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       };
 
       // Split video IDs into chunks of 5000 (optimized for ClickHouse query limits)
-      const CHUNK_SIZE = 500;
+      const CHUNK_SIZE = 5000;
       const videoIdChunks = chunkArray(videoIds, CHUNK_SIZE);
       console.log(
         `🔍 Split ${videoIds.length} video IDs into ${videoIdChunks.length} chunks of ${CHUNK_SIZE}`
@@ -2211,17 +2211,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
               argMax(vs.frame, vs.updated_at) as frame,
               argMax(vs.brand_name, vs.updated_at) as brand_name,
               argMax(vs.published_at, vs.updated_at) as published_at,
-              max(vs.updated_at) as updated_at,
-              any(vm.brand_id) as brand_id
-            FROM analytics.yt_video_summary vs
-            LEFT JOIN (
-              SELECT 
-                yt_video_id,
-                argMax(brand_id, date) as brand_id
-              FROM analytics.yt_videos_metrics
-              WHERE yt_video_id IN (${videoIdList})
-              GROUP BY yt_video_id
-            ) vm ON vs.yt_video_id = vm.yt_video_id
+              argMax(vs.brand_id, vs.updated_at) as brand_id,
+              max(vs.updated_at) as updated_at
+            FROM analytics.yt_video_summary_v2 vs
             WHERE vs.yt_video_id IN (${videoIdList})
             GROUP BY vs.yt_video_id
             HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
@@ -2244,17 +2236,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
               argMax(vs.frame, vs.updated_at) as frame,
               argMax(vs.brand_name, vs.updated_at) as brand_name,
               argMax(vs.published_at, vs.updated_at) as published_at,
-              max(vs.updated_at) as updated_at,
-              any(vm.brand_id) as brand_id
-            FROM analytics.yt_video_summary vs
-            LEFT JOIN (
-              SELECT 
-                yt_video_id,
-                argMax(brand_id, date) as brand_id
-              FROM analytics.yt_videos_metrics
-              WHERE yt_video_id IN (${videoIdList})
-              GROUP BY yt_video_id
-            ) vm ON vs.yt_video_id = vm.yt_video_id
+              argMax(vs.brand_id, vs.updated_at) as brand_id,
+              max(vs.updated_at) as updated_at
+            FROM analytics.yt_video_summary_v2 vs
             WHERE vs.yt_video_id IN (${videoIdList})
             GROUP BY vs.yt_video_id
             HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
@@ -2300,7 +2284,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `🔄 Executing ${videoIdChunks.length} ClickHouse chunks with controlled concurrency`
       );
 
-      const CONCURRENT_CHUNKS = 2;
+      const CONCURRENT_CHUNKS = 3;
       const chunkResults = [];
 
       for (let i = 0; i < videoIdChunks.length; i += CONCURRENT_CHUNKS) {
@@ -2325,44 +2309,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         `🔍 Merged ${chunkResults.length} chunks into ${clickhouseData.length} total records`
       );
 
-      // Fetch swiped videos and orientations in parallel
-      const parallelQueries = [];
-
-      if (userId) {
-        console.log(`🔄 Fetching swiped videos data`);
-        parallelQueries.push(fetchSwipedVideos(videoIds, userId));
-      } else {
-        parallelQueries.push(Promise.resolve([]));
-      }
-
-      console.log(`🔄 Fetching orientation data for ${videoIds.length} videos`);
-      parallelQueries.push(fetchVideoOrientations(videoIds));
-
-      const [swipedData, orientationData] = await Promise.all(parallelQueries);
-      swipedVideosData = swipedData;
-
-      // Create orientation map and process
-      const orientationMap = new Map();
-      orientationData.forEach((item) => {
-        const orientationValues = Array.isArray(item.orientations)
-          ? item.orientations
-          : item.orientations !== undefined && item.orientations !== null
-          ? [item.orientations]
-          : [];
-
-        const numericValues = orientationValues
-          .map((value) => Number(value))
-          .filter((value) => Number.isFinite(value));
-
-        const orientation = collapseOrientations(numericValues);
-        orientationMap.set(item.yt_video_id, orientation);
-      });
-
-      // Attach orientation to clickhouse data
-      clickhouseData = clickhouseData.map((row) => ({
-        ...row,
-        orientation: orientationMap.get(row.yt_video_id) || 0,
-      }));
+      // Note: Orientation and swiped videos data will be fetched AFTER filtering/limiting
+      // to avoid fetching data for videos that won't be in the final result
 
       clickhouseTime = performance.now() - clickhouseStartTime;
 
@@ -2372,13 +2320,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
         )}ms, returned ${clickhouseData.length} records`
       );
       console.log(
-        `✅ Orientation data fetched for ${orientationData.length} videos`
+        `ℹ️  Orientation and swiped videos data will be fetched after filtering to final ${limit} results`
       );
-      if (userId) {
-        console.log(
-          `✅ Swiped videos query completed, found ${swipedVideosData.length} records`
-        );
-      }
     } else if (!normalizedSearchTerm) {
       // Case 2: No keyword - direct ClickHouse query with filters
       console.log(
@@ -2494,14 +2437,15 @@ app.post("/search/videos/enhanced", async (req, res) => {
               frame,
               brand_name,
               published_at,
-              updated_at
+              updated_at,
+              brand_id
           FROM (
               SELECT *,
                   ROW_NUMBER() OVER (
                       PARTITION BY yt_video_id
                       ORDER BY updated_at DESC
                   ) AS rn
-              FROM analytics.yt_video_summary
+              FROM analytics.yt_video_summary_v2
               ${whereClause}
           )
           WHERE rn = 1
@@ -2525,22 +2469,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
           tv.title,
           tv.frame,
           tv.brand_name,
-          vm.brand_id,
+          tv.brand_id,
           tv.published_at,
           tv.updated_at,
           vcr.orientations
       FROM top_videos tv
-      LEFT JOIN (
-          SELECT
-              yt_video_id,
-              brand_id,
-              ROW_NUMBER() OVER (
-                  PARTITION BY yt_video_id
-                  ORDER BY date DESC
-              ) AS rn
-          FROM analytics.yt_videos_metrics
-          WHERE yt_video_id IN (SELECT yt_video_id FROM top_videos)
-      ) vm ON tv.yt_video_id = vm.yt_video_id AND vm.rn = 1
       LEFT JOIN (
           SELECT
               yt_video_id,
@@ -2616,14 +2549,9 @@ app.post("/search/videos/enhanced", async (req, res) => {
     const enhancedResults = [];
     let filteredOutCount = 0;
 
-    // Create a map of swiped videos for quick lookup
-    const swipedVideosMap = new Map();
-    swipedVideosData.forEach((item) => {
-      swipedVideosMap.set(item.yt_video_id, item);
-    });
-
     if (normalizedSearchTerm) {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
+      // Note: swiped videos and orientation data will be fetched AFTER limiting
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
         clickhouseMap.set(item.yt_video_id, item);
@@ -2640,7 +2568,6 @@ app.post("/search/videos/enhanced", async (req, res) => {
       // Process all video IDs from the merged list
       videoIds.forEach((videoId) => {
         const clickhouseInfo = clickhouseMap.get(videoId);
-        const swipedInfo = swipedVideosMap.get(videoId);
         const qdrantResult = qdrantMap.get(videoId);
 
         // Only include videos that have ClickHouse data
@@ -2660,8 +2587,8 @@ app.post("/search/videos/enhanced", async (req, res) => {
               : null,
             // ClickHouse summary data
             summary_data: clickhouseInfo,
-            // Swiped videos data (if available)
-            swiped_data: swipedInfo || null,
+            // Swiped videos data - will be populated after limiting
+            swiped_data: null,
           };
 
           enhancedResults.push(enhancedResult);
@@ -2671,6 +2598,12 @@ app.post("/search/videos/enhanced", async (req, res) => {
       });
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
+      // Create a map of swiped videos for quick lookup (only for non-searchTerm queries)
+      const swipedVideosMap = new Map();
+      swipedVideosData.forEach((item) => {
+        swipedVideosMap.set(item.yt_video_id, item);
+      });
+
       clickhouseData.forEach((clickhouseResult) => {
         const swipedInfo = swipedVideosMap.get(clickhouseResult.yt_video_id);
 
@@ -2757,6 +2690,74 @@ app.post("/search/videos/enhanced", async (req, res) => {
     console.log(
       `🔍 Applied final limit: ${enhancedResults.length} → ${finalResults.length} results`
     );
+
+    // NOW fetch orientation and swiped videos data only for the final results (for searchTerm queries)
+    if (normalizedSearchTerm && finalResults.length > 0) {
+      console.log(
+        `🔄 Fetching orientation and swiped videos for ${finalResults.length} final results`
+      );
+      const finalVideoIds = finalResults.map((r) => r.ytVideoId);
+
+      const finalParallelQueries = [];
+
+      if (userId) {
+        console.log(`🔄 Fetching swiped videos data for final results`);
+        finalParallelQueries.push(fetchSwipedVideos(finalVideoIds, userId));
+      } else {
+        finalParallelQueries.push(Promise.resolve([]));
+      }
+
+      console.log(
+        `🔄 Fetching orientation data for ${finalVideoIds.length} final videos`
+      );
+      finalParallelQueries.push(fetchVideoOrientations(finalVideoIds));
+
+      const [finalSwipedData, finalOrientationData] = await Promise.all(
+        finalParallelQueries
+      );
+      swipedVideosData = finalSwipedData;
+
+      // Create orientation map
+      const orientationMap = new Map();
+      finalOrientationData.forEach((item) => {
+        const orientationValues = Array.isArray(item.orientations)
+          ? item.orientations
+          : item.orientations !== undefined && item.orientations !== null
+          ? [item.orientations]
+          : [];
+
+        const numericValues = orientationValues
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value));
+
+        const orientation = collapseOrientations(numericValues);
+        orientationMap.set(item.yt_video_id, orientation);
+      });
+
+      // Create swiped videos map
+      const swipedVideosMap = new Map();
+      swipedVideosData.forEach((item) => {
+        swipedVideosMap.set(item.yt_video_id, item);
+      });
+
+      // Enrich final results with orientation and swiped data
+      finalResults.forEach((result) => {
+        // Add orientation to summary_data
+        if (result.summary_data) {
+          result.summary_data.orientation =
+            orientationMap.get(result.ytVideoId) || 0;
+        }
+        // Add swiped data
+        result.swiped_data = swipedVideosMap.get(result.ytVideoId) || null;
+      });
+
+      console.log(
+        `✅ Orientation data fetched for ${finalOrientationData.length} final videos`
+      );
+      console.log(
+        `✅ Swiped videos data fetched, found ${swipedVideosData.length} records`
+      );
+    }
 
     // Format response to match frontend expectations
     const data = {
