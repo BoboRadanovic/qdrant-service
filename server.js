@@ -2213,7 +2213,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
               argMax(vs.published_at, vs.updated_at) as published_at,
               argMax(vs.brand_id, vs.updated_at) as brand_id,
               max(vs.updated_at) as updated_at
-            FROM analytics.yt_video_summary_v2 vs
+            FROM analytics.yt_video_summary vs
             WHERE vs.yt_video_id IN (${videoIdList})
             GROUP BY vs.yt_video_id
             HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
@@ -2238,7 +2238,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
               argMax(vs.published_at, vs.updated_at) as published_at,
               argMax(vs.brand_id, vs.updated_at) as brand_id,
               max(vs.updated_at) as updated_at
-            FROM analytics.yt_video_summary_v2 vs
+            FROM analytics.yt_video_summary vs
             WHERE vs.yt_video_id IN (${videoIdList})
             GROUP BY vs.yt_video_id
             HAVING category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})
@@ -2445,7 +2445,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
                       PARTITION BY yt_video_id
                       ORDER BY updated_at DESC
                   ) AS rn
-              FROM analytics.yt_video_summary_v2
+              FROM analytics.yt_video_summary
               ${whereClause}
           )
           WHERE rn = 1
