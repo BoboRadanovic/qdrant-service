@@ -5936,6 +5936,561 @@ app.delete("/swiped-brands", authenticateUser, async (req, res) => {
   }
 });
 
+// ========================================
+// SWIPE BOARDS & SWIPED ITEMS - GET ENDPOINTS
+// ========================================
+
+// Get all swipe boards for authenticated user
+app.get("/swipeBoards/all", authenticateUser, async (req, res) => {
+  try {
+    const user_id = req.user.uid; // Get from token
+
+    console.log(`📋 Fetching all swipe boards for user ${user_id}`);
+
+    // Query to get all swipe boards for the user
+    const query = `
+      SELECT 
+        swipe_board_id,
+        name,
+        created,
+        share_id
+      FROM analytics.swipe_boards
+      WHERE user_id = {user_id:String}
+      ORDER BY created DESC
+    `;
+
+    const resultSet = await clickhouse.query({
+      query: query,
+      query_params: {
+        user_id: user_id,
+      },
+      format: "JSONEachRow",
+    });
+
+    const data = await resultSet.json();
+
+    console.log(`✅ Found ${data.length} swipe board(s) for user ${user_id}`);
+
+    res.json({
+      success: true,
+      total: data.length,
+      data: data,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching swipe boards:", error);
+    res.status(500).json({
+      error: "Failed to fetch swipe boards",
+      details: error.message,
+      code: "FETCH_ERROR",
+    });
+  }
+});
+
+// Get swiped videos for authenticated user
+app.get("/videos/swipes", authenticateUser, async (req, res) => {
+  try {
+    const firebase_id = req.user.uid; // Get from token
+    const { searchTerm = "", swipeBoardId = "0", limit = "500" } = req.query;
+
+    const parsedLimit = parseInt(limit) || 500;
+    const parsedSwipeBoardId = parseInt(swipeBoardId) || 0;
+
+    console.log(
+      `🎬 Fetching swiped videos for user ${firebase_id}, searchTerm: "${searchTerm}", swipeBoardId: ${parsedSwipeBoardId}, limit: ${parsedLimit}`
+    );
+
+    // Build WHERE conditions
+    const whereConditions = [`sv.firebase_id = {firebase_id:String}`];
+
+    // Filter by swipe board if specified (0 means all boards)
+    if (parsedSwipeBoardId !== 0) {
+      whereConditions.push(`has(sv.swipe_board_ids, ${parsedSwipeBoardId})`);
+    }
+
+    // Search term filter (search in title and brand_name)
+    let searchCondition = "";
+    if (searchTerm && searchTerm.trim() !== "") {
+      searchCondition = `AND (
+        positionCaseInsensitive(vs.title, {searchTerm:String}) > 0 
+        OR positionCaseInsensitive(vs.brand_name, {searchTerm:String}) > 0
+      )`;
+    }
+
+    const whereClause = whereConditions.join(" AND ");
+
+    // Query to get swiped videos with video details
+    const query = `
+      SELECT 
+        sv.id,
+        sv.firebase_id,
+        sv.yt_video_id,
+        sv.created_at as swiped_at,
+        sv.swipe_board_ids,
+        vs.title,
+        vs.frame,
+        vs.brand_name,
+        vs.brand_id,
+        vs.category_id,
+        vs.language,
+        vs.duration,
+        vs.published_at,
+        vs.total,
+        vs.last_30,
+        vs.last_60,
+        vs.last_90
+      FROM analytics.swiped_videos sv
+      LEFT JOIN (
+        SELECT 
+          yt_video_id,
+          argMax(title, updated_at) as title,
+          argMax(frame, updated_at) as frame,
+          argMax(brand_name, updated_at) as brand_name,
+          argMax(brand_id, updated_at) as brand_id,
+          argMax(category_id, updated_at) as category_id,
+          argMax(language, updated_at) as language,
+          argMax(duration, updated_at) as duration,
+          argMax(published_at, updated_at) as published_at,
+          argMax(total, updated_at) as total,
+          argMax(last_30, updated_at) as last_30,
+          argMax(last_60, updated_at) as last_60,
+          argMax(last_90, updated_at) as last_90
+        FROM analytics.yt_video_summary
+        GROUP BY yt_video_id
+      ) vs ON sv.yt_video_id = vs.yt_video_id
+      WHERE ${whereClause}
+      ${searchCondition}
+      ORDER BY sv.created_at DESC
+      LIMIT {limit:Int32}
+    `;
+
+    const resultSet = await clickhouse.query({
+      query: query,
+      query_params: {
+        firebase_id: firebase_id,
+        limit: parsedLimit,
+        ...(searchTerm &&
+          searchTerm.trim() !== "" && { searchTerm: searchTerm.trim() }),
+      },
+      format: "JSONEachRow",
+    });
+
+    const rawData = await resultSet.json();
+
+    // Transform to camelCase format
+    const results = rawData.map((item) => ({
+      id: item.id,
+      ytVideoId: item.yt_video_id,
+      swipeBoardIds: item.swipe_board_ids,
+      createdAt: item.swiped_at,
+      title: item.title,
+      frame: item.frame,
+      brandName: item.brand_name,
+      brandId: item.brand_id,
+      categoryId: item.category_id,
+      language: item.language,
+      duration: item.duration,
+      publishedAt: item.published_at,
+      total: item.total,
+      last30: item.last_30,
+      last60: item.last_60,
+      last90: item.last_90,
+    }));
+
+    console.log(
+      `✅ Found ${results.length} swiped video(s) for user ${firebase_id}`
+    );
+
+    res.json({
+      data: {
+        page: 1,
+        hasMore: false,
+        results: results,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching swiped videos:", error);
+    res.status(500).json({
+      error: "Failed to fetch swiped videos",
+      details: error.message,
+      code: "FETCH_ERROR",
+    });
+  }
+});
+
+// Get swiped brands for authenticated user
+app.get("/brands/swipes", authenticateUser, async (req, res) => {
+  try {
+    const firebase_id = req.user.uid; // Get from token
+    const {
+      page = "1",
+      limit = "25",
+      searchTerm = "",
+      sortProp = "total_views",
+      orderAsc = "false",
+      swipeBoardId = "0",
+    } = req.query;
+
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = parseInt(limit) || 25;
+    const parsedSwipeBoardId = parseInt(swipeBoardId) || 0;
+    const orderDirection = orderAsc === "true" ? "ASC" : "DESC";
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Validate sort property
+    const validSortProps = [
+      "total_views",
+      "total_spend",
+      "views_7",
+      "views_14",
+      "views_21",
+      "views_30",
+      "views_90",
+      "views_365",
+      "views_720",
+      "spend_7",
+      "spend_14",
+      "spend_21",
+      "spend_30",
+      "spend_90",
+      "spend_365",
+      "spend_720",
+      "swiped_at",
+    ];
+
+    const finalSortProp = validSortProps.includes(sortProp)
+      ? sortProp
+      : "total_views";
+
+    console.log(
+      `🏷️ Fetching swiped brands for user ${firebase_id}, page: ${parsedPage}, limit: ${parsedLimit}, searchTerm: "${searchTerm}", sortProp: ${finalSortProp}, orderAsc: ${orderAsc}, swipeBoardId: ${parsedSwipeBoardId}`
+    );
+
+    // Build WHERE conditions
+    const whereConditions = [`sb.firebase_id = {firebase_id:String}`];
+
+    // Filter by swipe board if specified (0 means all boards)
+    if (parsedSwipeBoardId !== 0) {
+      whereConditions.push(`has(sb.swipe_board_ids, ${parsedSwipeBoardId})`);
+    }
+
+    // Search term filter (search in brand name and description)
+    let searchCondition = "";
+    if (searchTerm && searchTerm.trim() !== "") {
+      searchCondition = `AND (
+        positionCaseInsensitive(bb.name, {searchTerm:String}) > 0 
+        OR positionCaseInsensitive(bb.description, {searchTerm:String}) > 0
+      )`;
+    }
+
+    const whereClause = whereConditions.join(" AND ");
+
+    // Query to get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM analytics.swiped_brands sb
+      INNER JOIN analytics.brand_basic bb ON sb.brand_id = bb.brand_id
+      WHERE ${whereClause}
+      ${searchCondition}
+    `;
+
+    // Main query with brand details and stats
+    const query = `
+      SELECT 
+        sb.id,
+        sb.firebase_id,
+        sb.brand_id,
+        sb.created_at as swiped_at,
+        sb.swipe_board_ids,
+        bb.name,
+        bb.description,
+        bb.category_id,
+        bb.country_id,
+        bb.avg_duration,
+        bb.thumbnail,
+        bb.updated_at,
+        COALESCE(bs.views_7, 0) as views_7,
+        COALESCE(bs.views_14, 0) as views_14,
+        COALESCE(bs.views_21, 0) as views_21,
+        COALESCE(bs.views_30, 0) as views_30,
+        COALESCE(bs.views_90, 0) as views_90,
+        COALESCE(bs.views_365, 0) as views_365,
+        COALESCE(bs.views_720, 0) as views_720,
+        COALESCE(bs.total_views, 0) as total_views,
+        COALESCE(bs.spend_7, 0) as spend_7,
+        COALESCE(bs.spend_14, 0) as spend_14,
+        COALESCE(bs.spend_21, 0) as spend_21,
+        COALESCE(bs.spend_30, 0) as spend_30,
+        COALESCE(bs.spend_90, 0) as spend_90,
+        COALESCE(bs.spend_365, 0) as spend_365,
+        COALESCE(bs.spend_720, 0) as spend_720,
+        COALESCE(bs.total_spend, 0) as total_spend
+      FROM analytics.swiped_brands sb
+      INNER JOIN analytics.brand_basic bb ON sb.brand_id = bb.brand_id
+      LEFT JOIN analytics.brand_summary_latest_view bs ON sb.brand_id = bs.brand_id
+      WHERE ${whereClause}
+      ${searchCondition}
+      ORDER BY ${finalSortProp} ${orderDirection}
+      LIMIT {limit:Int32} OFFSET {offset:Int32}
+    `;
+
+    // Execute both queries
+    const [countResult, dataResult] = await Promise.all([
+      clickhouse.query({
+        query: countQuery,
+        query_params: {
+          firebase_id: firebase_id,
+          ...(searchTerm &&
+            searchTerm.trim() !== "" && { searchTerm: searchTerm.trim() }),
+        },
+        format: "JSONEachRow",
+      }),
+      clickhouse.query({
+        query: query,
+        query_params: {
+          firebase_id: firebase_id,
+          limit: parsedLimit,
+          offset: offset,
+          ...(searchTerm &&
+            searchTerm.trim() !== "" && { searchTerm: searchTerm.trim() }),
+        },
+        format: "JSONEachRow",
+      }),
+    ]);
+
+    const countData = await countResult.json();
+    const rawData = await dataResult.json();
+    const totalCount = countData[0]?.total || 0;
+    const totalPages = Math.ceil(totalCount / parsedLimit);
+    const hasMore = parsedPage < totalPages;
+
+    // Transform to camelCase format
+    const results = rawData.map((item) => ({
+      id: item.id,
+      brandId: item.brand_id,
+      swipeBoardIds: item.swipe_board_ids,
+      createdAt: item.swiped_at,
+      name: item.name,
+      countryId: item.country_id,
+      categoryId: item.category_id,
+      totalSpend: item.total_spend,
+      thumbnail: item.thumbnail,
+    }));
+
+    console.log(
+      `✅ Found ${results.length} swiped brand(s) for user ${firebase_id} (total: ${totalCount})`
+    );
+
+    res.json({
+      data: {
+        page: parsedPage,
+        hasMore: hasMore,
+        results: results,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching swiped brands:", error);
+    res.status(500).json({
+      error: "Failed to fetch swiped brands",
+      details: error.message,
+      code: "FETCH_ERROR",
+    });
+  }
+});
+
+// Get swiped companies for authenticated user
+app.get("/companies/swipes", authenticateUser, async (req, res) => {
+  try {
+    const firebase_id = req.user.uid; // Get from token
+    const {
+      page = "1",
+      limit = "25",
+      searchTerm = "",
+      sortProp = "total_views",
+      orderAsc = "false",
+      swipeBoardId = "0",
+    } = req.query;
+
+    const parsedPage = parseInt(page) || 1;
+    const parsedLimit = parseInt(limit) || 25;
+    const parsedSwipeBoardId = parseInt(swipeBoardId) || 0;
+    const orderDirection = orderAsc === "true" ? "ASC" : "DESC";
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    // Validate sort property
+    const validSortProps = [
+      "total_views",
+      "total_spend",
+      "views_7",
+      "views_14",
+      "views_21",
+      "views_30",
+      "views_90",
+      "views_365",
+      "views_720",
+      "spend_7",
+      "spend_14",
+      "spend_21",
+      "spend_30",
+      "spend_90",
+      "spend_365",
+      "spend_720",
+      "swiped_at",
+    ];
+
+    const finalSortProp = validSortProps.includes(sortProp)
+      ? sortProp
+      : "total_views";
+
+    console.log(
+      `🏢 Fetching swiped companies for user ${firebase_id}, page: ${parsedPage}, limit: ${parsedLimit}, searchTerm: "${searchTerm}", sortProp: ${finalSortProp}, orderAsc: ${orderAsc}, swipeBoardId: ${parsedSwipeBoardId}`
+    );
+
+    // Build WHERE conditions
+    const whereConditions = [`sc.firebase_id = {firebase_id:String}`];
+
+    // Filter by swipe board if specified (0 means all boards)
+    if (parsedSwipeBoardId !== 0) {
+      whereConditions.push(`has(sc.swipe_board_ids, ${parsedSwipeBoardId})`);
+    }
+
+    // Search term filter (search in company legal_name)
+    let searchCondition = "";
+    if (searchTerm && searchTerm.trim() !== "") {
+      searchCondition = `AND positionCaseInsensitive(cb.legal_name, {searchTerm:String}) > 0`;
+    }
+
+    const whereClause = whereConditions.join(" AND ");
+
+    // Query to get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM analytics.swiped_companies sc
+      INNER JOIN analytics.company_basic cb ON sc.company_id = cb.company_id
+      WHERE ${whereClause}
+      ${searchCondition}
+    `;
+
+    // Main query with company details and stats
+    const query = `
+      SELECT 
+        sc.id,
+        sc.firebase_id,
+        sc.company_id,
+        sc.created_at as swiped_at,
+        sc.swipe_board_ids,
+        cb.legal_name,
+        cb.country_id,
+        cb.category_id,
+        cb.updated_at,
+        COALESCE(cs.views_7, 0) as views_7,
+        COALESCE(cs.views_14, 0) as views_14,
+        COALESCE(cs.views_21, 0) as views_21,
+        COALESCE(cs.views_30, 0) as views_30,
+        COALESCE(cs.views_90, 0) as views_90,
+        COALESCE(cs.views_365, 0) as views_365,
+        COALESCE(cs.views_720, 0) as views_720,
+        COALESCE(cs.total_views, 0) as total_views,
+        COALESCE(cs.spend_7, 0) as spend_7,
+        COALESCE(cs.spend_14, 0) as spend_14,
+        COALESCE(cs.spend_21, 0) as spend_21,
+        COALESCE(cs.spend_30, 0) as spend_30,
+        COALESCE(cs.spend_90, 0) as spend_90,
+        COALESCE(cs.spend_365, 0) as spend_365,
+        COALESCE(cs.spend_720, 0) as spend_720,
+        COALESCE(cs.total_spend, 0) as total_spend
+      FROM analytics.swiped_companies sc
+      INNER JOIN analytics.company_basic cb ON sc.company_id = cb.company_id
+      LEFT JOIN (
+        SELECT
+          company_id,
+          argMax(views_7, date) AS views_7,
+          argMax(views_14, date) AS views_14,
+          argMax(views_21, date) AS views_21,
+          argMax(views_30, date) AS views_30,
+          argMax(views_90, date) AS views_90,
+          argMax(views_365, date) AS views_365,
+          argMax(views_720, date) AS views_720,
+          argMax(total_views, date) AS total_views,
+          argMax(spend_7, date) AS spend_7,
+          argMax(spend_14, date) AS spend_14,
+          argMax(spend_21, date) AS spend_21,
+          argMax(spend_30, date) AS spend_30,
+          argMax(spend_90, date) AS spend_90,
+          argMax(spend_365, date) AS spend_365,
+          argMax(spend_720, date) AS spend_720,
+          argMax(total_spend, date) AS total_spend
+        FROM analytics.company_summary
+        GROUP BY company_id
+      ) cs ON sc.company_id = cs.company_id
+      WHERE ${whereClause}
+      ${searchCondition}
+      ORDER BY ${finalSortProp} ${orderDirection}
+      LIMIT {limit:Int32} OFFSET {offset:Int32}
+    `;
+
+    // Execute both queries
+    const [countResult, dataResult] = await Promise.all([
+      clickhouse.query({
+        query: countQuery,
+        query_params: {
+          firebase_id: firebase_id,
+          ...(searchTerm &&
+            searchTerm.trim() !== "" && { searchTerm: searchTerm.trim() }),
+        },
+        format: "JSONEachRow",
+      }),
+      clickhouse.query({
+        query: query,
+        query_params: {
+          firebase_id: firebase_id,
+          limit: parsedLimit,
+          offset: offset,
+          ...(searchTerm &&
+            searchTerm.trim() !== "" && { searchTerm: searchTerm.trim() }),
+        },
+        format: "JSONEachRow",
+      }),
+    ]);
+
+    const countData = await countResult.json();
+    const rawData = await dataResult.json();
+    const totalCount = countData[0]?.total || 0;
+    const totalPages = Math.ceil(totalCount / parsedLimit);
+    const hasMore = parsedPage < totalPages;
+
+    // Transform to camelCase format
+    const results = rawData.map((item) => ({
+      id: item.id,
+      companyId: item.company_id,
+      swipeBoardIds: item.swipe_board_ids,
+      createdAt: item.swiped_at,
+      countryId: item.country_id,
+      categoryId: item.category_id,
+      totalSpend: item.total_spend,
+      legalName: item.legal_name,
+    }));
+
+    console.log(
+      `✅ Found ${results.length} swiped company(ies) for user ${firebase_id} (total: ${totalCount})`
+    );
+
+    res.json({
+      data: {
+        page: parsedPage,
+        hasMore: hasMore,
+        results: results,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching swiped companies:", error);
+    res.status(500).json({
+      error: "Failed to fetch swiped companies",
+      details: error.message,
+      code: "FETCH_ERROR",
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`🚀 QDrant Search Service started on port ${PORT}`);
@@ -6003,7 +6558,20 @@ app.listen(PORT, async () => {
   console.log(`  DELETE /swiped-companies - Delete swiped company`);
   console.log(`  POST /swiped-brands - Insert swiped brand(s)`);
   console.log(`  DELETE /swiped-brands - Delete swiped brand`);
-  console.log(`VERSION 07082025`);
+  console.log(
+    `\n📥 Swipe Boards & Items Retrieval (4 endpoints, requires auth token):`
+  );
+  console.log(`  GET /swipeBoards/all - Get all swipe boards for user`);
+  console.log(
+    `  GET /videos/swipes - Get swiped videos with search and filters`
+  );
+  console.log(
+    `  GET /brands/swipes - Get swiped brands with pagination and sorting`
+  );
+  console.log(
+    `  GET /companies/swipes - Get swiped companies with pagination and sorting`
+  );
+  console.log(`VERSION 24122025`);
 });
 
 // Graceful shutdown
