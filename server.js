@@ -1633,6 +1633,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       dateFrom = null, // New parameter for date range filtering
       dateTo = null, // New parameter for date range filtering
       orientation = 0,
+      showLanding = false,
     } = req.body;
     console.log("showVideos", showVideos);
     // Get user_id from authentication middleware
@@ -1738,6 +1739,7 @@ app.post("/search/videos/enhanced", async (req, res) => {
       dateFrom,
       dateTo,
       orientation: orientationFilter,
+      showLanding: showLanding === true,
     });
 
     // Determine default sortProp based on context
@@ -2759,15 +2761,46 @@ app.post("/search/videos/enhanced", async (req, res) => {
       );
     }
 
+    // Optionally enrich with landing page data
+    let landingPageMap = new Map();
+    if (showLanding === true && finalResults.length > 0) {
+      try {
+        const landingResponse = await axios.post(
+          "https://apiv1.vidtao.com/api/videosPublic/check-landing-pages",
+          { ytVideoIds: finalResults.map((r) => r.ytVideoId) },
+          { timeout: 5000 }
+        );
+
+        const landingResults = landingResponse.data?.data?.results || [];
+        landingResults.forEach((item) => {
+          if (item?.ytVideoId) {
+            landingPageMap.set(item.ytVideoId, item.hasLandingPage === true);
+          }
+        });
+      } catch (error) {
+        console.warn(
+          "Landing page check failed (non-critical):",
+          error.message
+        );
+      }
+    }
+    if(showLanding === true){
+      console.log("landingPageMap", landingPageMap);
+    }
+
     // Format response to match frontend expectations
     const data = {
       hasMore: enhancedResults.length > parseInt(limit),
       results: finalResults.map((r) => {
         const isSwiped = r.swiped_data ? true : false;
+        const hasLandingPage = landingPageMap.get(r.ytVideoId);
 
         return {
           ytVideoId: r.ytVideoId,
           isSwiped: isSwiped, // Set based on swiped_videos table
+          ...(showLanding === true
+            ? { hasLandingPage: hasLandingPage ?? null }
+            : {}),
           title: r.summary_data?.title || r.qdrant_data?.title || null,
           duration: r.summary_data?.duration || r.qdrant_data?.duration || null,
           orientation: r.summary_data?.orientation ?? 0,
