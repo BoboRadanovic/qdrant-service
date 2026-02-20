@@ -705,6 +705,11 @@ const authenticateToken = (req, res, next) => {
   }
 
   try {
+
+    if (token === process.env.PERMANENT_BEARER_TOKEN) { //allow Brat to test it
+      return next();
+    }
+
     // Simple JWT decode (without verification)
     const base64Url = token.split(".")[1];
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
