@@ -4881,123 +4881,49 @@ app.post("/search/companies/enhanced", async (req, res) => {
           if (effectiveSortProp === "similarity_score") {
             // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
             query = `
-              SELECT 
-                cb.company_id,
-                COALESCE(cs.views_7, 0) as views_7,
-                COALESCE(cs.views_14, 0) as views_14,
-                COALESCE(cs.views_21, 0) as views_21,
-                COALESCE(cs.views_30, 0) as views_30,
-                COALESCE(cs.views_90, 0) as views_90,
-                COALESCE(cs.views_365, 0) as views_365,
-                COALESCE(cs.views_720, 0) as views_720,
-                COALESCE(cs.total_views, 0) as total_views,
-                COALESCE(cs.spend_7, 0) as spend_7,
-                COALESCE(cs.spend_14, 0) as spend_14,
-                COALESCE(cs.spend_21, 0) as spend_21,
-                COALESCE(cs.spend_30, 0) as spend_30,
-                COALESCE(cs.spend_90, 0) as spend_90,
-                COALESCE(cs.spend_365, 0) as spend_365,
-                COALESCE(cs.spend_720, 0) as spend_720,
-                COALESCE(cs.total_spend, 0) as total_spend,
-                cs.latest_date as summary_date,
-                cb.legal_name,
-                cb.country_id,
-                cb.category_id,
-                cb.is_affiliate,
-                cb.updated_at
-              FROM analytics.company_basic cb
-              LEFT JOIN (
-                  SELECT
-                    company_id,
-                    argMax(views_7, date) AS views_7,
-                    argMax(views_14, date) AS views_14,
-                    argMax(views_21, date) AS views_21,
-                    argMax(views_30, date) AS views_30,
-                    argMax(views_90, date) AS views_90,
-                    argMax(views_365, date) AS views_365,
-                    argMax(views_720, date) AS views_720,
-                    argMax(total_views, date) AS total_views,
-                    argMax(spend_7, date) AS spend_7,
-                    argMax(spend_14, date) AS spend_14,
-                    argMax(spend_21, date) AS spend_21,
-                    argMax(spend_30, date) AS spend_30,
-                    argMax(spend_90, date) AS spend_90,
-                    argMax(spend_365, date) AS spend_365,
-                    argMax(spend_720, date) AS spend_720,
-                    argMax(total_spend, date) AS total_spend,
-                    argMax(date, date) AS latest_date
-                FROM analytics.company_summary
-                WHERE company_id IN (${companyIdList})
-                GROUP BY company_id
-              ) cs ON cb.company_id = cs.company_id
-              WHERE cb.company_id IN (${companyIdList})
+              SELECT
+                company_id,
+                views_7, views_14, views_21, views_30, views_90,
+                views_365, views_720, total_views,
+                spend_7, spend_14, spend_21, spend_30, spend_90,
+                spend_365, spend_720, total_spend,
+                latest_date as summary_date,
+                legal_name, country_id, category_id, is_affiliate,
+                rank_by_category, change_by_category,
+                rank_by_country, change_by_country,
+                rank_global, change_global, rank_date
+              FROM analytics.company_combined
+              WHERE company_id IN (${companyIdList})
               AND ${
                 normalizedCategoryIds &&
                 Array.isArray(normalizedCategoryIds) &&
                 normalizedCategoryIds.length > 0
-                  ? `cb.category_id IN (${normalizedCategoryIds.join(", ")})`
-                  : `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+                  ? `category_id IN (${normalizedCategoryIds.join(", ")})`
+                  : `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
               }
             `;
           } else {
             // For other sort fields, use ClickHouse ordering
-            const whereClause = `WHERE cb.company_id IN (${companyIdList}) AND ${
+            const whereClause = `WHERE company_id IN (${companyIdList}) AND ${
               normalizedCategoryIds &&
               Array.isArray(normalizedCategoryIds) &&
               normalizedCategoryIds.length > 0
-                ? `cb.category_id IN (${normalizedCategoryIds.join(", ")})`
-                : `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+                ? `category_id IN (${normalizedCategoryIds.join(", ")})`
+                : `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
             }`;
             query = `
-              SELECT 
-                cb.company_id,
-                COALESCE(cs.views_7, 0) as views_7,
-                COALESCE(cs.views_14, 0) as views_14,
-                COALESCE(cs.views_21, 0) as views_21,
-                COALESCE(cs.views_30, 0) as views_30,
-                COALESCE(cs.views_90, 0) as views_90,
-                COALESCE(cs.views_365, 0) as views_365,
-                COALESCE(cs.views_720, 0) as views_720,
-                COALESCE(cs.total_views, 0) as total_views,
-                COALESCE(cs.spend_7, 0) as spend_7,
-                COALESCE(cs.spend_14, 0) as spend_14,
-                COALESCE(cs.spend_21, 0) as spend_21,
-                COALESCE(cs.spend_30, 0) as spend_30,
-                COALESCE(cs.spend_90, 0) as spend_90,
-                COALESCE(cs.spend_365, 0) as spend_365,
-                COALESCE(cs.spend_720, 0) as spend_720,
-                COALESCE(cs.total_spend, 0) as total_spend,
-                cs.latest_date as summary_date,
-                cb.legal_name,
-                cb.country_id,
-                cb.category_id,
-                cb.is_affiliate,
-                cb.updated_at
-              FROM analytics.company_basic cb
-              LEFT JOIN (
-                SELECT
-                    company_id,
-                    argMax(views_7, date) AS views_7,
-                    argMax(views_14, date) AS views_14,
-                    argMax(views_21, date) AS views_21,
-                    argMax(views_30, date) AS views_30,
-                    argMax(views_90, date) AS views_90,
-                    argMax(views_365, date) AS views_365,
-                    argMax(views_720, date) AS views_720,
-                    argMax(total_views, date) AS total_views,
-                    argMax(spend_7, date) AS spend_7,
-                    argMax(spend_14, date) AS spend_14,
-                    argMax(spend_21, date) AS spend_21,
-                    argMax(spend_30, date) AS spend_30,
-                    argMax(spend_90, date) AS spend_90,
-                    argMax(spend_365, date) AS spend_365,
-                    argMax(spend_720, date) AS spend_720,
-                    argMax(total_spend, date) AS total_spend,
-                    argMax(date, date) AS latest_date
-                FROM analytics.company_summary
-                WHERE company_id IN (${companyIdList})
-                GROUP BY company_id
-              ) cs ON cb.company_id = cs.company_id
+              SELECT
+                company_id,
+                views_7, views_14, views_21, views_30, views_90,
+                views_365, views_720, total_views,
+                spend_7, spend_14, spend_21, spend_30, spend_90,
+                spend_365, spend_720, total_spend,
+                latest_date as summary_date,
+                legal_name, country_id, category_id, is_affiliate,
+                rank_by_category, change_by_category,
+                rank_by_country, change_by_country,
+                rank_global, change_global, rank_date
+              FROM analytics.company_combined
               ${whereClause}
               ORDER BY ${order_by} ${order_direction.toUpperCase()}
             `;
@@ -5111,17 +5037,17 @@ app.post("/search/companies/enhanced", async (req, res) => {
       ) {
         // If categoryIds are provided, filter to include only those categories
         const categoryList = normalizedCategoryIds.join(", ");
-        whereConditions.push(`cb.category_id IN (${categoryList})`);
+        whereConditions.push(`category_id IN (${categoryList})`);
       } else {
         // If no categoryIds provided, exclude the standard excluded categories
         whereConditions.push(
-          `cb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+          `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
         );
       }
 
       // Country ID filter
       if (normalizedCountryId && typeof normalizedCountryId === "number") {
-        whereConditions.push(`cb.country_id = ${normalizedCountryId}`);
+        whereConditions.push(`country_id = ${normalizedCountryId}`);
       }
 
       // Combine all conditions
@@ -5130,63 +5056,21 @@ app.post("/search/companies/enhanced", async (req, res) => {
           ? `WHERE ${whereConditions.join(" AND ")}`
           : "";
 
-      // Optimize query: pre-filter top 500 companies before expensive deduplication
-      //const preFilterLimit = 500; // Take top 500 companies, then deduplicate and limit
-
       const query = `
         SELECT
-          cb.company_id,
-          cb.legal_name,
-          cb.country_id,
-          cb.category_id,
-          cb.is_affiliate,
-          cb.updated_at,
-          COALESCE(cs.views_7, 0) AS views_7,
-          COALESCE(cs.views_14, 0) AS views_14,
-          COALESCE(cs.views_21, 0) AS views_21,
-          COALESCE(cs.views_30, 0) AS views_30,
-          COALESCE(cs.views_90, 0) AS views_90,
-          COALESCE(cs.views_365, 0) AS views_365,
-          COALESCE(cs.views_720, 0) AS views_720,
-          COALESCE(cs.total_views, 0) AS total_views,
-          COALESCE(cs.spend_7, 0) AS spend_7,
-          COALESCE(cs.spend_14, 0) AS spend_14,
-          COALESCE(cs.spend_21, 0) AS spend_21,
-          COALESCE(cs.spend_30, 0) AS spend_30,
-          COALESCE(cs.spend_90, 0) AS spend_90,
-          COALESCE(cs.spend_365, 0) AS spend_365,
-          COALESCE(cs.spend_720, 0) AS spend_720,
-          COALESCE(cs.total_spend, 0) AS total_spend,
-          cs.latest_date AS summary_date
-      FROM analytics.company_basic AS cb
-      LEFT JOIN (
-          SELECT
-              company_id,
-              argMax(views_7, date) AS views_7,
-              argMax(views_14, date) AS views_14,
-              argMax(views_21, date) AS views_21,
-              argMax(views_30, date) AS views_30,
-              argMax(views_90, date) AS views_90,
-              argMax(views_365, date) AS views_365,
-              argMax(views_720, date) AS views_720,
-              argMax(total_views, date) AS total_views,
-              argMax(spend_7, date) AS spend_7,
-              argMax(spend_14, date) AS spend_14,
-              argMax(spend_21, date) AS spend_21,
-              argMax(spend_30, date) AS spend_30,
-              argMax(spend_90, date) AS spend_90,
-              argMax(spend_365, date) AS spend_365,
-              argMax(spend_720, date) AS spend_720,
-              argMax(total_spend, date) AS total_spend,
-              argMax(date, date) AS latest_date
-          FROM analytics.company_summary
-          GROUP BY company_id
-      ) AS cs
-          ON cb.company_id = cs.company_id
-      ${whereClause}
-      ORDER BY COALESCE(cs.${order_by}, 0) ${order_direction.toUpperCase()}, cb.company_id
-      LIMIT ${parseInt(limit)};
-
+          company_id, legal_name, country_id, category_id, is_affiliate,
+          views_7, views_14, views_21, views_30, views_90,
+          views_365, views_720, total_views,
+          spend_7, spend_14, spend_21, spend_30, spend_90,
+          spend_365, spend_720, total_spend,
+          latest_date as summary_date,
+          rank_by_category, change_by_category,
+          rank_by_country, change_by_country,
+          rank_global, change_global, rank_date
+        FROM analytics.company_combined
+        ${whereClause}
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}, company_id
+        LIMIT ${parseInt(limit)}
       `;
 
       console.log(`📊 Executing direct ClickHouse company query with filters`);
@@ -6543,14 +6427,14 @@ app.get("/companies/swipes", authenticateUser, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM analytics.swiped_companies sc
-      INNER JOIN analytics.company_basic cb ON sc.company_id = cb.company_id
+      INNER JOIN analytics.company_combined cb ON sc.company_id = cb.company_id
       WHERE ${whereClause}
       ${searchCondition}
     `;
 
     // Main query with company details and stats
     const query = `
-      SELECT 
+      SELECT
         sc.id,
         sc.firebase_id,
         sc.company_id,
@@ -6559,47 +6443,18 @@ app.get("/companies/swipes", authenticateUser, async (req, res) => {
         cb.legal_name,
         cb.country_id,
         cb.category_id,
-        cb.updated_at,
-        COALESCE(cs.views_7, 0) as views_7,
-        COALESCE(cs.views_14, 0) as views_14,
-        COALESCE(cs.views_21, 0) as views_21,
-        COALESCE(cs.views_30, 0) as views_30,
-        COALESCE(cs.views_90, 0) as views_90,
-        COALESCE(cs.views_365, 0) as views_365,
-        COALESCE(cs.views_720, 0) as views_720,
-        COALESCE(cs.total_views, 0) as total_views,
-        COALESCE(cs.spend_7, 0) as spend_7,
-        COALESCE(cs.spend_14, 0) as spend_14,
-        COALESCE(cs.spend_21, 0) as spend_21,
-        COALESCE(cs.spend_30, 0) as spend_30,
-        COALESCE(cs.spend_90, 0) as spend_90,
-        COALESCE(cs.spend_365, 0) as spend_365,
-        COALESCE(cs.spend_720, 0) as spend_720,
-        COALESCE(cs.total_spend, 0) as total_spend
+        cb.is_affiliate,
+        cb.latest_date as summary_date,
+        cb.rank_date,
+        cb.views_7, cb.views_14, cb.views_21, cb.views_30,
+        cb.views_90, cb.views_365, cb.views_720, cb.total_views,
+        cb.spend_7, cb.spend_14, cb.spend_21, cb.spend_30,
+        cb.spend_90, cb.spend_365, cb.spend_720, cb.total_spend,
+        cb.rank_by_category, cb.change_by_category,
+        cb.rank_by_country, cb.change_by_country,
+        cb.rank_global, cb.change_global
       FROM analytics.swiped_companies sc
-      INNER JOIN analytics.company_basic cb ON sc.company_id = cb.company_id
-      LEFT JOIN (
-        SELECT
-          company_id,
-          argMax(views_7, date) AS views_7,
-          argMax(views_14, date) AS views_14,
-          argMax(views_21, date) AS views_21,
-          argMax(views_30, date) AS views_30,
-          argMax(views_90, date) AS views_90,
-          argMax(views_365, date) AS views_365,
-          argMax(views_720, date) AS views_720,
-          argMax(total_views, date) AS total_views,
-          argMax(spend_7, date) AS spend_7,
-          argMax(spend_14, date) AS spend_14,
-          argMax(spend_21, date) AS spend_21,
-          argMax(spend_30, date) AS spend_30,
-          argMax(spend_90, date) AS spend_90,
-          argMax(spend_365, date) AS spend_365,
-          argMax(spend_720, date) AS spend_720,
-          argMax(total_spend, date) AS total_spend
-        FROM analytics.company_summary
-        GROUP BY company_id
-      ) cs ON sc.company_id = cs.company_id
+      INNER JOIN analytics.company_combined cb ON sc.company_id = cb.company_id
       WHERE ${whereClause}
       ${searchCondition}
       ORDER BY ${finalSortProp} ${orderDirection}
