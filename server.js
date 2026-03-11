@@ -4648,7 +4648,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Step 1: Start embedding creation and external service call in parallel (if applicable)
       const parallelStartTime = performance.now();
 
-      const embeddingPromise = createEmbedding(trimmedSearchTerm);
+      const embeddingPromise = createEmbedding(trimmedSearchTerm, 384); // 384 dimensions for companies collection
 
       let externalPromise = null;
       if (shouldUseExternalService) {
@@ -5132,7 +5132,7 @@ app.post("/search/companies/enhanced", async (req, res) => {
       // Case 1: Keyword search - combine Qdrant similarity scores with ClickHouse data
       const clickhouseMap = new Map();
       clickhouseData.forEach((item) => {
-        clickhouseMap.set(item.company_id, item);
+        clickhouseMap.set(String(item.company_id), item);
       });
 
       // Process ALL company IDs (both Qdrant and external results)
@@ -5140,32 +5140,33 @@ app.post("/search/companies/enhanced", async (req, res) => {
       const qdrantMap = new Map();
       qdrantResults.forEach((qdrantResult) => {
         const companyId = qdrantResult.payload?.company_id || qdrantResult.id;
-        qdrantMap.set(companyId, qdrantResult);
+        qdrantMap.set(String(companyId), qdrantResult);
       });
+
+      console.log(
+        `🔍 Processing ${companyIds.length} company IDs (Qdrant: ${
+          qdrantResults.length
+        }, External: ${companyIds.length - qdrantResults.length})`
+      );
 
       // Process all company IDs from the merged list
       companyIds.forEach((companyId) => {
-        const clickhouseInfo = clickhouseMap.get(companyId);
+        const clickhouseInfo = clickhouseMap.get(String(companyId));
         const swipedInfo = swipedCompaniesMap.get(String(companyId));
-        const qdrantResult = qdrantMap.get(companyId);
+        const qdrantResult = qdrantMap.get(String(companyId));
 
-        // Only include companies that have ClickHouse data
-        if (clickhouseInfo) {
-          const enhancedResult = {
-            companyId: companyId,
-            similarity_score: qdrantResult ? qdrantResult.score : null,
-            // Qdrant payload data (if available)
-            qdrant_data: qdrantResult ? qdrantResult.payload : null,
-            // ClickHouse summary data
-            summary_data: clickhouseInfo,
-            // Swiped companies data (if available)
-            swiped_data: swipedInfo || null,
-          };
+        const enhancedResult = {
+          companyId: companyId,
+          similarity_score: qdrantResult ? qdrantResult.score : null,
+          // Qdrant payload data (if available)
+          qdrant_data: qdrantResult ? qdrantResult.payload : null,
+          // ClickHouse summary data
+          summary_data: clickhouseInfo || null,
+          // Swiped companies data (if available)
+          swiped_data: swipedInfo || null,
+        };
 
-          enhancedResults.push(enhancedResult);
-        } else {
-          filteredOutCount++;
-        }
+        enhancedResults.push(enhancedResult);
       });
     } else {
       // Case 2: ClickHouse-only search - format ClickHouse data directly
