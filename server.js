@@ -356,7 +356,7 @@ function buildQdrantDurationFilter(durationRanges, fieldName = "duration") {
 async function fetchExternalVideoIds({
   searchTerm,
   categoryIds,
-  languageId,
+  language,
   showVideos,
   durationRanges = null, // New: Array of ranges: [[0, 30], [60, 120], [600, null]]
   durationMoreThen = null, // Legacy: kept for backward compatibility
@@ -379,7 +379,7 @@ async function fetchExternalVideoIds({
     const payload = {
       searchTerm: searchTerm || null,
       categoryIds: normalizedCategoryIds,
-      language: languageId || null,
+      language: language || null,
       showVideos, // Pass videoStatus directly (can be "all", "public", "unlisted", or null)
       limit: limit || 200,
       dateFrom: dateFrom || null,
@@ -765,6 +765,211 @@ app.get("/check-alive", async (req, res) => {
     });
   }
 });
+
+// === TEST ENDPOINTS (no auth required) - for debugging Qdrant results ===
+
+// Test: Search Qdrant directly and return raw results with scores
+// Usage: GET /test/qdrant-search?query=yoga+mat&limit=20&video_id=abc123
+// If video_id is provided, it also checks whether that specific video appears in results
+app.get("/test/qdrant-search", async (req, res) => {
+  try {
+    const { query, limit = 50, video_id, hnsw_ef = 128 } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ error: "query parameter is required" });
+    }
+
+    const embedding = await createEmbedding(query.trim());
+
+    const searchBody = {
+      vector: embedding,
+      limit: parseInt(limit),
+      with_payload: true,
+      with_vector: false,
+      params: {
+        hnsw_ef: parseInt(hnsw_ef),
+      },
+    };
+
+    const searchResponse = await axios.post(
+      `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
+      searchBody,
+      { headers: buildHeaders(), timeout: 30000 }
+    );
+
+    const results = searchResponse.data.result;
+
+    // Check if a specific video_id is in the results
+    let targetVideoInfo = null;
+    if (video_id) {
+      const found = results.find(
+        (r) => r.payload?.yt_video_id === video_id || String(r.id) === String(video_id)
+      );
+      targetVideoInfo = found
+        ? { found: true, score: found.score, position: results.indexOf(found) + 1, payload: found.payload }
+        : { found: false, message: `video_id "${video_id}" not found in top ${limit} results` };
+    }
+
+    res.json({
+      query,
+      collection: COLLECTION_NAME,
+      total_results: results.length,
+      target_video: targetVideoInfo,
+      score_range: results.length > 0
+        ? { highest: results[0].score, lowest: results[results.length - 1].score }
+        : null,
+      results: results.map((r, i) => ({
+        position: i + 1,
+        id: r.id,
+        score: r.score,
+        yt_video_id: r.payload?.yt_video_id,
+        payload: r.payload,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message, details: error.response?.data });
+  }
+});
+
+// Test: Look up a specific point (video) directly in Qdrant by yt_video_id
+// Usage: GET /test/qdrant-point?video_id=abc123
+// This checks if the video even exists in the Qdrant collection
+app.get("/test/qdrant-point", async (req, res) => {
+  try {
+    const { video_id } = req.query;
+
+    if (!video_id) {
+      return res.status(400).json({ error: "video_id parameter is required" });
+    }
+
+    // Scroll through collection filtering by yt_video_id
+    const scrollResponse = await axios.post(
+      `${qdrantUrl}/collections/${COLLECTION_NAME}/points/scroll`,
+      {
+        filter: {
+          must: [
+            { key: "yt_video_id", match: { value: video_id } },
+          ],
+        },
+        limit: 1,
+        with_payload: true,
+        with_vector: false,
+      },
+      { headers: buildHeaders(), timeout: 30000 }
+    );
+
+    const points = scrollResponse.data.result?.points || [];
+
+    if (points.length === 0) {
+      return res.json({
+        video_id,
+        exists_in_qdrant: false,
+        message: `No point found with yt_video_id="${video_id}" in collection "${COLLECTION_NAME}"`,
+      });
+    }
+
+    res.json({
+      video_id,
+      exists_in_qdrant: true,
+      point: {
+        id: points[0].id,
+        payload: points[0].payload,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message, details: error.response?.data });
+  }
+});
+
+// Test: Compare similarity between a query and a specific video
+// Usage: GET /test/qdrant-similarity?query=yoga+mat&video_id=abc123
+// Returns the similarity score between the query embedding and the video's stored vector
+app.get("/test/qdrant-similarity", async (req, res) => {
+  try {
+    const { query, video_id } = req.query;
+
+    if (!query || !video_id) {
+      return res.status(400).json({ error: "Both query and video_id parameters are required" });
+    }
+
+    // Step 1: Find the point by video_id
+    const scrollResponse = await axios.post(
+      `${qdrantUrl}/collections/${COLLECTION_NAME}/points/scroll`,
+      {
+        filter: {
+          must: [{ key: "yt_video_id", match: { value: video_id } }],
+        },
+        limit: 1,
+        with_payload: true,
+        with_vector: true,
+      },
+      { headers: buildHeaders(), timeout: 30000 }
+    );
+
+    const points = scrollResponse.data.result?.points || [];
+    if (points.length === 0) {
+      return res.json({
+        query,
+        video_id,
+        exists_in_qdrant: false,
+        message: `Video "${video_id}" not found in collection`,
+      });
+    }
+
+    const point = points[0];
+
+    // Step 2: Create embedding for query
+    const queryEmbedding = await createEmbedding(query.trim());
+
+    // Step 3: Compute cosine similarity
+    const videoVector = point.vector;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < queryEmbedding.length; i++) {
+      dotProduct += queryEmbedding[i] * videoVector[i];
+      normA += queryEmbedding[i] * queryEmbedding[i];
+      normB += videoVector[i] * videoVector[i];
+    }
+    const cosineSimilarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+
+    // Step 4: Also do a regular search to see where this video would rank
+    const searchResponse = await axios.post(
+      `${qdrantUrl}/collections/${COLLECTION_NAME}/points/search`,
+      {
+        vector: queryEmbedding,
+        limit: 200,
+        with_payload: true,
+        with_vector: false,
+        params: { hnsw_ef: 128 },
+      },
+      { headers: buildHeaders(), timeout: 30000 }
+    );
+
+    const results = searchResponse.data.result;
+    const position = results.findIndex(
+      (r) => r.payload?.yt_video_id === video_id || String(r.id) === String(point.id)
+    );
+
+    res.json({
+      query,
+      video_id,
+      exists_in_qdrant: true,
+      cosine_similarity: cosineSimilarity,
+      search_position: position >= 0 ? position + 1 : null,
+      search_position_note: position >= 0
+        ? `Found at position ${position + 1} out of ${results.length}`
+        : `Not found in top ${results.length} results`,
+      top_score: results.length > 0 ? results[0].score : null,
+      cutoff_score: results.length > 0 ? results[results.length - 1].score : null,
+      point_payload: point.payload,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message, details: error.response?.data });
+  }
+});
+
+// === END TEST ENDPOINTS ===
 
 // Apply authentication middleware to protected routes
 app.use(authenticateToken);
@@ -1991,6 +2196,16 @@ app.post("/search/videos/enhanced", async (req, res) => {
         } results`
       );
 
+      // DEBUG: Print all Qdrant results
+      // console.log(`🔎 [DEBUG] Qdrant raw results (all ${qdrantResults.length}):`);
+      // qdrantResults.forEach((r, i) => {
+      //   console.log(`   ${i + 1}. score: ${r.score.toFixed(6)} | yt_video_id: ${r.payload?.yt_video_id} | cat: ${r.payload?.category_id} | lang: ${r.payload?.language} | unlisted: ${r.payload?.unlisted} | dur: ${r.payload?.duration}`);
+      // });
+      // if (qdrantResults.length > 0) {
+      //   console.log(`🔎 [DEBUG] Score range: ${qdrantResults[0].score.toFixed(6)} (best) → ${qdrantResults[qdrantResults.length - 1].score.toFixed(6)} (worst)`);
+      //   console.log(`🔎 [DEBUG] Similarity threshold: ${similarityThreshold} — results that will survive: ${qdrantResults.filter(r => r.score >= similarityThreshold).length}/${qdrantResults.length}`);
+      // }
+
       // Step 5: Process Qdrant results
       // Filter by similarity threshold
       const originalResultsCount = qdrantResults.length;
@@ -2020,6 +2235,11 @@ app.post("/search/videos/enhanced", async (req, res) => {
             2
           )}ms, returned ${externalVideoIds.length} video IDs`
         );
+        // DEBUG: Print all external service results
+        // console.log(`🔎 [DEBUG] External service results (all ${externalVideoIds.length}):`);
+        // externalVideoIds.forEach((vid, i) => {
+        //   console.log(`   ${i + 1}. yt_video_id: ${vid}`);
+        // });
       } else {
         console.log(`🌐 External service skipped (complex query)`);
         externalTime = 0;
