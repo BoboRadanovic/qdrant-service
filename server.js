@@ -3934,89 +3934,51 @@ app.post("/search/brands/enhanced", async (req, res) => {
         if (effectiveSortProp === "similarity_score") {
           // When sorting by similarity_score, preserve Qdrant order by not using ORDER BY
           query = `
-            SELECT 
-              bb.brand_id,
-              COALESCE(bs.views_7, 0) as views_7,
-              COALESCE(bs.views_14, 0) as views_14,
-              COALESCE(bs.views_21, 0) as views_21,
-              COALESCE(bs.views_30, 0) as views_30,
-              COALESCE(bs.views_90, 0) as views_90,
-              COALESCE(bs.views_365, 0) as views_365,
-              COALESCE(bs.views_720, 0) as views_720,
-              COALESCE(bs.total_views, 0) as total_views,
-              COALESCE(bs.spend_7, 0) as spend_7,
-              COALESCE(bs.spend_14, 0) as spend_14,
-              COALESCE(bs.spend_21, 0) as spend_21,
-              COALESCE(bs.spend_30, 0) as spend_30,
-              COALESCE(bs.spend_90, 0) as spend_90,
-              COALESCE(bs.spend_365, 0) as spend_365,
-              COALESCE(bs.spend_720, 0) as spend_720,
-              COALESCE(bs.total_spend, 0) as total_spend,
-              bs.latest_date as summary_date,
-              bb.name,
-              bb.description,
-              bb.thumbnail,
-              bb.category_id,
-              bb.country_id,
-              bb.avg_duration,
-              bb.updated_at
-            FROM analytics.brand_basic bb
-            LEFT JOIN (
-                SELECT *
-                FROM analytics.brand_summary_latest_view
-                WHERE brand_id IN (${brandIdList})
-            ) bs ON bb.brand_id = bs.brand_id
-            WHERE bb.brand_id IN (${brandIdList})
+            SELECT
+              brand_id,
+              views_7, views_14, views_21, views_30, views_90,
+              views_365, views_720, total_views,
+              spend_7, spend_14, spend_21, spend_30, spend_90,
+              spend_365, spend_720, total_spend,
+              latest_date as summary_date,
+              name, description, thumbnail,
+              category_id, country_id, avg_duration,
+              rank_by_category, change_by_category,
+              rank_by_country, change_by_country,
+              rank_global, change_global, rank_date
+            FROM analytics.brand_combined
+            WHERE brand_id IN (${brandIdList})
             AND ${
               normalizedCategoryIds &&
               Array.isArray(normalizedCategoryIds) &&
               normalizedCategoryIds.length > 0
-                ? `bb.category_id IN (${normalizedCategoryIds.join(", ")})`
-                : `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+                ? `category_id IN (${normalizedCategoryIds.join(", ")})`
+                : `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
             }
           `;
         } else {
           // For other sort fields, use ClickHouse ordering
-          const whereClause = `WHERE bb.brand_id IN (${brandIdList}) AND ${
+          const whereClause = `WHERE brand_id IN (${brandIdList}) AND ${
             normalizedCategoryIds &&
             Array.isArray(normalizedCategoryIds) &&
             normalizedCategoryIds.length > 0
-              ? `bb.category_id IN (${normalizedCategoryIds.join(", ")})`
-              : `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+              ? `category_id IN (${normalizedCategoryIds.join(", ")})`
+              : `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
           }`;
           query = `
-            SELECT 
-              bb.brand_id,
-              COALESCE(bs.views_7, 0) as views_7,
-              COALESCE(bs.views_14, 0) as views_14,
-              COALESCE(bs.views_21, 0) as views_21,
-              COALESCE(bs.views_30, 0) as views_30,
-              COALESCE(bs.views_90, 0) as views_90,
-              COALESCE(bs.views_365, 0) as views_365,
-              COALESCE(bs.views_720, 0) as views_720,
-              COALESCE(bs.total_views, 0) as total_views,
-              COALESCE(bs.spend_7, 0) as spend_7,
-              COALESCE(bs.spend_14, 0) as spend_14,
-              COALESCE(bs.spend_21, 0) as spend_21,
-              COALESCE(bs.spend_30, 0) as spend_30,
-              COALESCE(bs.spend_90, 0) as spend_90,
-              COALESCE(bs.spend_365, 0) as spend_365,
-              COALESCE(bs.spend_720, 0) as spend_720,
-              COALESCE(bs.total_spend, 0) as total_spend,
-              bs.latest_date as summary_date,
-              bb.name,
-              bb.description,
-              bb.thumbnail,
-              bb.category_id,
-              bb.country_id,
-              bb.avg_duration,
-              bb.updated_at
-            FROM analytics.brand_basic bb
-            LEFT JOIN (
-                SELECT *
-                FROM analytics.brand_summary_latest_view
-                WHERE brand_id IN (${brandIdList})
-            ) bs ON bb.brand_id = bs.brand_id
+            SELECT
+              brand_id,
+              views_7, views_14, views_21, views_30, views_90,
+              views_365, views_720, total_views,
+              spend_7, spend_14, spend_21, spend_30, spend_90,
+              spend_365, spend_720, total_spend,
+              latest_date as summary_date,
+              name, description, thumbnail,
+              category_id, country_id, avg_duration,
+              rank_by_category, change_by_category,
+              rank_by_country, change_by_country,
+              rank_global, change_global, rank_date
+            FROM analytics.brand_combined
             ${whereClause}
             ORDER BY ${order_by} ${order_direction.toUpperCase()}
           `;
@@ -4119,10 +4081,7 @@ app.post("/search/brands/enhanced", async (req, res) => {
         `📊 Starting direct ClickHouse brand search with filters at ${new Date().toISOString()}`
       );
 
-      // Build WHERE clause for filters
-      // Note: brand_summary table only contains brand_id, views, spend, and date
-      // Category, country, software, and duration filters are not available in this table
-      // Build WHERE clause for filters
+      // Build WHERE clause for filters (brand_combined has all fields)
       const whereConditions = [];
 
       // Category ID filter
@@ -4133,17 +4092,17 @@ app.post("/search/brands/enhanced", async (req, res) => {
       ) {
         // If categoryIds are provided, filter to include only those categories
         const categoryList = normalizedCategoryIds.join(", ");
-        whereConditions.push(`bb.category_id IN (${categoryList})`);
+        whereConditions.push(`category_id IN (${categoryList})`);
       } else {
         // If no categoryIds provided, exclude the standard excluded categories
         whereConditions.push(
-          `bb.category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
+          `category_id NOT IN (${EXCLUDED_CATEGORIES.join(", ")})`
         );
       }
 
       // Country ID filter
       if (normalizedCountryId && typeof normalizedCountryId === "number") {
-        whereConditions.push(`bb.country_id = ${normalizedCountryId}`);
+        whereConditions.push(`country_id = ${normalizedCountryId}`);
       }
 
       // Combine all conditions
@@ -4152,46 +4111,28 @@ app.post("/search/brands/enhanced", async (req, res) => {
           ? `WHERE ${whereConditions.join(" AND ")}`
           : "";
 
-      // Take 1000 brands based on WHERE and ORDER clause, then get first 200 distinct
-      const preFilterLimit = 1000; // Take top 1000, then get first 200 distinct
-
       console.log(
-        `🔍 whereClause: ${whereClause}, preFilterLimit: ${preFilterLimit}`
+        `🔍 whereClause: ${whereClause}`
       );
 
-      // Fast approach: get 1000 records, then deduplicate programmatically
+      // brand_combined is already deduplicated - no need for preFilterLimit or dedup
       const query = `
-        SELECT 
-          bb.brand_id,
-          COALESCE(bs.views_7, 0) as views_7,
-          COALESCE(bs.views_14, 0) as views_14,
-          COALESCE(bs.views_21, 0) as views_21,
-          COALESCE(bs.views_30, 0) as views_30,
-          COALESCE(bs.views_90, 0) as views_90,
-          COALESCE(bs.views_365, 0) as views_365,
-          COALESCE(bs.views_720, 0) as views_720,
-          COALESCE(bs.total_views, 0) as total_views,
-          COALESCE(bs.spend_7, 0) as spend_7,
-          COALESCE(bs.spend_14, 0) as spend_14,
-          COALESCE(bs.spend_21, 0) as spend_21,
-          COALESCE(bs.spend_30, 0) as spend_30,
-          COALESCE(bs.spend_90, 0) as spend_90,
-          COALESCE(bs.spend_365, 0) as spend_365,
-          COALESCE(bs.spend_720, 0) as spend_720,
-          COALESCE(bs.total_spend, 0) as total_spend,
-          bs.latest_date as summary_date,
-          bb.name,
-          bb.description,
-          bb.category_id,
-          bb.country_id,
-          bb.avg_duration,
-          bb.thumbnail,
-          bb.updated_at
-        FROM analytics.brand_basic bb
-        LEFT JOIN analytics.brand_summary_latest_view AS bs ON bb.brand_id = bs.brand_id
+        SELECT
+          brand_id,
+          views_7, views_14, views_21, views_30, views_90,
+          views_365, views_720, total_views,
+          spend_7, spend_14, spend_21, spend_30, spend_90,
+          spend_365, spend_720, total_spend,
+          latest_date as summary_date,
+          name, description, thumbnail,
+          category_id, country_id, avg_duration,
+          rank_by_category, change_by_category,
+          rank_by_country, change_by_country,
+          rank_global, change_global, rank_date
+        FROM analytics.brand_combined
         ${whereClause}
-        ORDER BY COALESCE(bs.${order_by}, 0) ${order_direction.toUpperCase()}, bb.brand_id
-        LIMIT ${preFilterLimit}
+        ORDER BY ${order_by} ${order_direction.toUpperCase()}, brand_id
+        LIMIT ${parseInt(limit)}
       `;
 
       console.log(
@@ -4203,42 +4144,15 @@ app.post("/search/brands/enhanced", async (req, res) => {
         const resultSet = await clickhouse.query({
           query: query,
           format: "JSONEachRow",
-          clickhouse_settings: {
-            // Query-specific memory settings for brand search (increased for large datasets)
-            max_memory_usage: 48000000000, // 48GB for this specific query (increased from 20GB)
-            max_bytes_before_external_group_by: 36000000000, // 36GB (increased from 15GB)
-            max_bytes_before_external_sort: 36000000000, // 36GB (increased from 15GB)
-            max_threads: 4, // Increased threads for better performance
-          },
         });
 
-        const rawData = await resultSet.json();
+        clickhouseData = await resultSet.json();
         clickhouseTime = performance.now() - clickhouseStartTime;
 
         console.log(
           `✅ ClickHouse returned ${
-            rawData.length
-          } raw records in ${clickhouseTime.toFixed(2)}ms`
-        );
-
-        // Programmatic deduplication: keep first occurrence of each brand_id
-        const seenBrandIds = new Set();
-        clickhouseData = [];
-
-        for (const record of rawData) {
-          if (!seenBrandIds.has(record.brand_id)) {
-            seenBrandIds.add(record.brand_id);
-            clickhouseData.push(record);
-
-            // Stop when we have enough distinct brands
-            if (clickhouseData.length >= parseInt(limit)) {
-              break;
-            }
-          }
-        }
-
-        console.log(
-          `🔍 Deduplicated ${rawData.length} → ${clickhouseData.length} distinct brands`
+            clickhouseData.length
+          } records in ${clickhouseTime.toFixed(2)}ms`
         );
 
         // If userId is provided, fetch swiped brands data for the returned brand IDs
@@ -6446,14 +6360,14 @@ app.get("/brands/swipes", authenticateUser, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM analytics.swiped_brands sb
-      INNER JOIN analytics.brand_basic bb ON sb.brand_id = bb.brand_id
+      INNER JOIN analytics.brand_combined bb ON sb.brand_id = bb.brand_id
       WHERE ${whereClause}
       ${searchCondition}
     `;
 
     // Main query with brand details and stats
     const query = `
-      SELECT 
+      SELECT
         sb.id,
         sb.firebase_id,
         sb.brand_id,
@@ -6465,26 +6379,32 @@ app.get("/brands/swipes", authenticateUser, async (req, res) => {
         bb.country_id,
         bb.avg_duration,
         bb.thumbnail,
-        bb.updated_at,
-        COALESCE(bs.views_7, 0) as views_7,
-        COALESCE(bs.views_14, 0) as views_14,
-        COALESCE(bs.views_21, 0) as views_21,
-        COALESCE(bs.views_30, 0) as views_30,
-        COALESCE(bs.views_90, 0) as views_90,
-        COALESCE(bs.views_365, 0) as views_365,
-        COALESCE(bs.views_720, 0) as views_720,
-        COALESCE(bs.total_views, 0) as total_views,
-        COALESCE(bs.spend_7, 0) as spend_7,
-        COALESCE(bs.spend_14, 0) as spend_14,
-        COALESCE(bs.spend_21, 0) as spend_21,
-        COALESCE(bs.spend_30, 0) as spend_30,
-        COALESCE(bs.spend_90, 0) as spend_90,
-        COALESCE(bs.spend_365, 0) as spend_365,
-        COALESCE(bs.spend_720, 0) as spend_720,
-        COALESCE(bs.total_spend, 0) as total_spend
+        bb.latest_date as summary_date,
+        bb.rank_date,
+        bb.views_7,
+        bb.views_14,
+        bb.views_21,
+        bb.views_30,
+        bb.views_90,
+        bb.views_365,
+        bb.views_720,
+        bb.total_views,
+        bb.spend_7,
+        bb.spend_14,
+        bb.spend_21,
+        bb.spend_30,
+        bb.spend_90,
+        bb.spend_365,
+        bb.spend_720,
+        bb.total_spend,
+        bb.rank_by_category,
+        bb.change_by_category,
+        bb.rank_by_country,
+        bb.change_by_country,
+        bb.rank_global,
+        bb.change_global
       FROM analytics.swiped_brands sb
-      INNER JOIN analytics.brand_basic bb ON sb.brand_id = bb.brand_id
-      LEFT JOIN analytics.brand_summary_latest_view bs ON sb.brand_id = bs.brand_id
+      INNER JOIN analytics.brand_combined bb ON sb.brand_id = bb.brand_id
       WHERE ${whereClause}
       ${searchCondition}
       ORDER BY ${finalSortProp} ${orderDirection}
